@@ -339,11 +339,20 @@ def test_q_secrets_clean_repo(empty_repo: Path):
     assert b.value == 0
 
 
+# Test fixtures are split so the source-file bytes don't themselves match
+# Q_secrets' regexes (which would alarm on every audit). The runtime bytes
+# (constructed below) still match, so the tests still verify the scanner.
+_AWS_PREFIX = b"AKIA"
+_AWS_BODY = b"IOSFODNN7" + b"EXAMPLE"  # AWS docs canonical example
+_GH_PREFIX = b"ghp_"
+_GH_BODY = b"1234567890" + b"ABCDEFabcdef" + b"1234567890ABCDEF"  # 36 chars
+
+
 def test_q_secrets_alarm_on_aws_key(tmp_path: Path):
     repo = tmp_path / "leaky"
     repo.mkdir()
     _git_init(repo)
-    (repo / "config.txt").write_bytes(b"AKIAIOSFODNN7EXAMPLE\n")
+    (repo / "config.txt").write_bytes(_AWS_PREFIX + _AWS_BODY + b"\n")
     _git_commit(repo, "leak")
     spec = _spec("Q_secrets", "symverify.stabilizer.compute_q_secrets")
     state = State(reflexivity_path=repo)
@@ -356,9 +365,7 @@ def test_q_secrets_alarm_on_github_pat(tmp_path: Path):
     repo = tmp_path / "leaky"
     repo.mkdir()
     _git_init(repo)
-    (repo / "settings.txt").write_bytes(
-        b"GH_TOKEN=ghp_1234567890ABCDEFabcdef1234567890ABCDEF\n"
-    )
+    (repo / "settings.txt").write_bytes(b"GH_TOKEN=" + _GH_PREFIX + _GH_BODY + b"\n")
     _git_commit(repo, "leak")
     spec = _spec("Q_secrets", "symverify.stabilizer.compute_q_secrets")
     state = State(reflexivity_path=repo)

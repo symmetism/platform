@@ -19,6 +19,8 @@ from pathlib import Path
 import click
 from rich.console import Console
 
+from symverify import db, narrative
+
 
 # Windows defaults stdout to cp1252 which can't encode the Unicode
 # glyphs (✓, ✗, ◉, ≠) we render. Force UTF-8 for both stdout/stderr at
@@ -211,8 +213,56 @@ def status(explain: bool) -> None:
             encoding="utf-8",
         )
 
-    if explain:
-        click.echo("(narrative generation lands in E5 — not yet wired)", err=True)
+    # --- E2: persist snapshot to SQLite ---------------------------------
+    snapshot_status = "lockdown" if report.alarm else (
+        "drift"
+        if any(b.status not in (STATUS_CONSERVED, STATUS_PENDING) for b in report.brackets)
+        else "clean"
+    )
+    snapshot_id: int | None = None
+    try:
+        with db.connect() as conn:
+            snapshot_id = db.insert_snapshot(
+                conn,
+                trinity_r=meta.get("reflexivity", {}).get("trinity"),
+                trinity_p=meta.get("platform", {}).get("trinity"),
+                system_fold=None,  # populated at G1
+                brackets={b.charge_id: b.to_json() for b in report.brackets},
+                status=snapshot_status,
+            )
+            db.insert_event(
+                conn,
+                kind="manual" if not explain else "explain",
+                repo=None,
+                detail={"alarm": report.alarm, "snapshot_id": snapshot_id},
+            )
+    except Exception as e:
+        console.print(f"[{render.DRIFT}](db write skipped: {e})[/]")
+
+    # --- E5: --explain triggers narrative -------------------------------
+    if explain and snapshot_id is not None:
+        snap_for_narr = {
+            "status": snapshot_status,
+            "trinity_r": meta.get("reflexivity", {}).get("trinity"),
+            "trinity_p": meta.get("platform", {}).get("trinity"),
+            "system_fold": None,
+            "brackets": {b.charge_id: b.to_json() for b in report.brackets},
+        }
+        text = narrative.narrate(snap_for_narr, trigger="manual")
+        if text is None:
+            text = narrative.unavailable_text("OpenAI client unavailable or API error")
+        try:
+            with db.connect() as conn:
+                db.insert_narrative(
+                    conn,
+                    trigger="manual",
+                    text=text,
+                    snapshot_id=snapshot_id,
+                )
+        except Exception:
+            pass
+        console.print(f"\n[{render.MUTED}]narrative:[/]")
+        console.print(text)
 
     if report.alarm:
         raise SystemExit(1)
@@ -332,3 +382,52 @@ def init() -> None:
     # Defer to status (the command above) by invoking it programmatically.
     ctx = click.get_current_context()
     ctx.invoke(status, explain=False)
+
+
+# ---------------------------------------------------------------------------
+# `sym log` (E4)
+# ---------------------------------------------------------------------------
+
+
+@main.command("log")
+@click.option("--since", default=None, help="ISO-8601 UTC lower bound (inclusive).")
+@click.option("--limit", default=50, type=int, show_default=True)
+def log_cmd(since: str | None, limit: int) -> None:
+    """Chronological journal of events + narratives."""
+    console = Console()
+    try:
+        with db.connect() as conn:
+            events = db.list_events(conn, since=since, limit=limit)
+            nars = db.list_narratives(conn, since=since, limit=limit)
+    except Exception as e:
+        console.print(f"[{render.ALARM}]database read failed: {e}[/]")
+        raise SystemExit(2)
+
+    if not events and not nars:
+        console.print(
+            f"[{render.MUTED}]no journal entries"
+            f"{' since ' + since if since else ''}[/]"
+        )
+        return
+
+    # Merge by timestamp, newest first.
+    items: list[tuple[str, str, str]] = []
+    for e in events:
+        items.append(
+            (
+                e["occurred_at"],
+                "event",
+                f"{e['kind']}  {e.get('repo') or '-'}  {e['detail']}",
+            )
+        )
+    for n in nars:
+        items.append(
+            (n["generated_at"], "narrative", f"({n['trigger']}) {n['text']}")
+        )
+    items.sort(key=lambda r: r[0], reverse=True)
+
+    for ts, kind, body in items[:limit]:
+        kind_style = render.STABLE if kind == "narrative" else render.MUTED
+        console.print(
+            f"[{render.MUTED}]{ts}[/] [{kind_style}]{kind:9s}[/] {body}"
+        )
