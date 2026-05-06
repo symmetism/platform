@@ -90,6 +90,68 @@ class TriggerEvent:
 # ---------------------------------------------------------------------------
 
 
+# Module-level state used to detect status transitions across audits.
+# Single-threaded access via the worker thread, no lock needed.
+_LAST_OVERALL_STATUS: str | None = None
+# Hold the last narrate timestamp per overall status to rate-limit:
+# even if the system flaps between clean and drift repeatedly, we
+# don't want to spam the OpenAI API. One narrative per status-change
+# is enough.
+_LAST_NARRATIVE_AT: dict[str, float] = {}
+_NARRATIVE_RATELIMIT_SEC = 600  # 10 min between narratives for same status
+
+
+def _maybe_narrate_transition(
+    overall: str,
+    snap_for_narr: dict,
+    snapshot_id: int | None,
+) -> None:
+    """Generate + persist a narrative when overall transitions away from
+    'clean' (or back to it). Best-effort: any error is logged and
+    swallowed so the audit cycle keeps running."""
+    global _LAST_OVERALL_STATUS
+
+    prev = _LAST_OVERALL_STATUS
+    _LAST_OVERALL_STATUS = overall
+
+    if prev is None or prev == overall:
+        return  # no transition
+
+    # Worth narrating: clean→drift, clean→lockdown, drift→clean,
+    # drift→lockdown, lockdown→clean. Skip drift→drift_expected etc.
+    interesting = {"clean", "drift", "lockdown"}
+    if overall not in interesting and prev not in interesting:
+        return
+
+    now_ts = time.time()
+    last_at = _LAST_NARRATIVE_AT.get(overall, 0.0)
+    if now_ts - last_at < _NARRATIVE_RATELIMIT_SEC:
+        log.info("skipping narrative for %s→%s (rate-limited)", prev, overall)
+        return
+    _LAST_NARRATIVE_AT[overall] = now_ts
+
+    log.info("transition %s → %s — generating narrative", prev, overall)
+    try:
+        text = narrative.narrate(
+            snap_for_narr,
+            trigger=f"daemon-transition-{prev}-to-{overall}",
+        )
+        if text is None:
+            text = narrative.unavailable_text(
+                "OpenAI client unavailable or API error"
+            )
+        with db.connect() as conn:
+            db.insert_narrative(
+                conn,
+                trigger=f"transition-{prev}-to-{overall}",
+                text=text,
+                snapshot_id=snapshot_id,
+            )
+        log.info("narrative persisted (%d chars)", len(text))
+    except Exception as e:
+        log.warning("narrative generation failed: %s", e)
+
+
 def run_audit_cycle(event: TriggerEvent) -> dict:
     """Run a complete audit cycle. Returns the status dict that was
     written to status.json. Safe to call from worker thread."""
@@ -145,6 +207,7 @@ def run_audit_cycle(event: TriggerEvent) -> dict:
     log.info("audit cycle: status.json written")
 
     # Persist snapshot + event to SQLite.
+    snap_id: int | None = None
     try:
         with db.connect() as conn:
             snap_id = db.insert_snapshot(
@@ -168,6 +231,17 @@ def run_audit_cycle(event: TriggerEvent) -> dict:
             )
     except Exception as e:
         log.exception("snapshot/event persist failed: %s", e)
+
+    # AI plan: narrate on overall status transitions (clean↔drift↔lockdown).
+    # Rate-limited so a flapping system can't blow the OpenAI budget.
+    snap_for_narr = {
+        "status": overall,
+        "trinity_r": meta.get("reflexivity", {}).get("trinity"),
+        "trinity_p": meta.get("platform", {}).get("trinity"),
+        "system_fold": fold,
+        "brackets": status_payload["brackets"],
+    }
+    _maybe_narrate_transition(overall, snap_for_narr, snap_id)
 
     return status_payload
 

@@ -476,6 +476,36 @@ def service_status_cmd(task_name: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# `sym gui` — Windows GUI app
+# ---------------------------------------------------------------------------
+
+
+@main.command("gui")
+def gui_cmd() -> None:
+    """Launch the Symmetism Coherence GUI window.
+
+    Reads ~/.symmetism/state/status.json (the daemon writes it) and
+    renders the same trinity / brackets / narrative the CLI shows,
+    plus buttons for manual audit, narrative explain, the verify
+    page, and service install/uninstall.
+
+    The GUI shares the same audit and narrative pipeline as the CLI
+    — no duplicate logic. If the daemon isn't running, you'll see
+    an empty fold; the GUI's "⚙" panel can install it.
+    """
+    try:
+        from symverify import gui as _gui
+    except ImportError as e:
+        click.echo(
+            f"[error] customtkinter not installed ({e}). "
+            "Install with: pip install customtkinter>=5.2",
+            err=True,
+        )
+        raise SystemExit(2)
+    _gui.main()
+
+
+# ---------------------------------------------------------------------------
 # `sym push` and `sym scaffold` (F11)
 # ---------------------------------------------------------------------------
 
