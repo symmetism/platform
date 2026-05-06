@@ -1,0 +1,7 @@
+# Canonical immutable artifacts — owner review required for any change.
+# See _command/02_SOT_RULES.md R2 and MANIFEST_CANONICAL.json.
+
+docs/archive/master-original/* @Symmetism
+MANIFEST_CANONICAL.json         @Symmetism
+.github/workflows/verify-canonical.yml @Symmetism
+.githooks/pre-commit            @Symmetism

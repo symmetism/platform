@@ -1,0 +1,33 @@
+name: Verify Canonical Anchors
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify canonical anchors
+        run: |
+          python3 - <<'EOF'
+          import hashlib, json, sys
+          with open("MANIFEST_CANONICAL.json", "r", encoding="utf-8") as f:
+              m = json.load(f)
+          fail = False
+          for a in m.get("anchors", []):
+              if a.get("policy") != "immutable":
+                  continue
+              with open(a["path"], "rb") as fb:
+                  got = hashlib.sha256(fb.read()).hexdigest()
+              if got != a["sha256"]:
+                  print(f"DRIFT: {a['path']}")
+                  print(f"  expected: {a['sha256']}")
+                  print(f"  got:      {got}")
+                  fail = True
+              else:
+                  print(f"OK: {a['path']}  sha256={got[:16]}…")
+          sys.exit(1 if fail else 0)
+          EOF

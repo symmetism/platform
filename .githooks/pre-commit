@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Pre-commit hook for Reflexivity: enforce canonical immutability.
+# Exits non-zero (blocking commit) if any staged change touches a path
+# marked policy:immutable in MANIFEST_CANONICAL.json.
+#
+# Configured via: git config core.hooksPath .githooks
+# See _command/02_SOT_RULES.md R2 and 07_EQUATION_INTEGRATION.md.
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+manifest="${repo_root}/MANIFEST_CANONICAL.json"
+
+# No manifest -> nothing to enforce yet.
+[[ -f "$manifest" ]] || exit 0
+
+# Pick a python interpreter (python3 preferred; fallback to python).
+PY=""
+if command -v python3 >/dev/null 2>&1; then PY="python3"
+elif command -v python  >/dev/null 2>&1; then PY="python"
+else
+  echo "ERROR: pre-commit hook requires python or python3 on PATH." >&2
+  exit 1
+fi
+
+# Extract immutable paths.
+immutable_paths="$("$PY" - "$manifest" <<'EOF'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+for a in data.get("anchors", []):
+    if a.get("policy") == "immutable":
+        print(a["path"])
+EOF
+)"
+
+# Check staged changes against immutable paths.
+staged="$(git diff --cached --name-only)"
+violation=0
+while IFS= read -r p; do
+  [[ -z "$p" ]] && continue
+  if printf '%s\n' "$staged" | grep -Fxq "$p"; then
+    echo "ERROR: attempt to modify immutable canonical file: $p" >&2
+    echo "       This is forbidden by MANIFEST_CANONICAL.json (policy: immutable)." >&2
+    echo "       See _command/02_SOT_RULES.md R2 for the rationale." >&2
+    violation=1
+  fi
+done <<< "$immutable_paths"
+
+exit "$violation"

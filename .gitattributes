@@ -1,0 +1,11 @@
+# Canonical immutable artifacts must be byte-identical across platforms.
+# Disable line-ending normalization for files that are pinned in
+# MANIFEST_CANONICAL.json with policy: immutable. CI verify-canonical
+# computes sha256 over the raw bytes; any normalization would break it.
+# See _command/02_SOT_RULES.md R2 / R13.
+
+docs/archive/master-original/** -text
+
+# Default for everything else: let git decide (text auto-detected, LF
+# in the repo, native on the working tree).
+* text=auto
