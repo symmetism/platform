@@ -23,11 +23,16 @@ services:
       - caddy_logs:/var/log/caddy
     networks:
       - symmetism
+    # Caddy admin API is disabled in our Caddyfile; use a port probe via
+    # wget against the reverse-proxied health endpoint instead. We reach
+    # the webapp through Caddy's local proxy on port 80 → reflexivity-
+    # webapp:5000/healthz, so this also implicitly tests the proxy.
     healthcheck:
-      test: ["CMD", "wget", "-qSO-", "http://localhost:2019/config/"]
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "http://127.0.0.1/healthz"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
+      start_period: 30s
 
   watchtower:
     # Using beatkind/watchtower (maintained fork, v2.3.2+) instead of
