@@ -30,7 +30,11 @@ services:
       retries: 3
 
   watchtower:
-    image: containrrr/watchtower:latest
+    # Using beatkind/watchtower (maintained fork, v2.3.2+) instead of
+    # containrrr/watchtower:latest because the latter still uses Docker
+    # API client v1.25 which Docker 29.x rejects (minimum API 1.40).
+    # Pin to :latest of the fork; we'll bump explicitly when needed.
+    image: beatkind/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     volumes:
