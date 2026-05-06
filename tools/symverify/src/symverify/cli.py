@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from symverify import db, narrative
+from symverify import db, narrative, state_collect
 
 
 # Windows defaults stdout to cp1252 which can't encode the Unicode
@@ -62,123 +62,10 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _collect_invariants(repo_path: Path, version: str) -> dict[str, str]:
-    """Pick a few cross-repo invariants for Q_cross_repo.
-
-    Both repos should have identical SymVerify version (we run one
-    binary) and identical MANIFEST_CANONICAL schema string. License
-    SHA-256 is included only if the repo has a LICENSE file.
-    """
-    import hashlib
-    import json as _json
-
-    inv: dict[str, str] = {"symverify_version": version}
-    mc = repo_path / "MANIFEST_CANONICAL.json"
-    if mc.is_file():
-        try:
-            data = _json.loads(mc.read_text(encoding="utf-8"))
-            schema = data.get("schema", "")
-            if schema:
-                inv["manifest_canonical_schema"] = schema
-        except Exception:
-            pass
-    lic = repo_path / "LICENSE"
-    if lic.is_file():
-        inv["license_sha256"] = hashlib.sha256(lic.read_bytes()).hexdigest()
-    return inv
-
-
-def _build_state(
-    repos: dict[str, config.RepoConfig],
-    servers: dict[str, config.ServerConfig] | None = None,
-) -> tuple[State, dict[str, dict]]:
-    """Compute manifests + invariants for both repos, then poll any
-    configured servers' /__manifest endpoints (F12). Returns
-    (state, per_repo_metadata) where metadata holds short SHAs, trinity
-    fingerprints, and server commit_sha+manifest_root_hash for display.
-    """
-    from symverify import git_ops
-
-    state = State(symverify_version=__version__)
-    meta: dict[str, dict] = {}
-    for name, rc in repos.items():
-        if not rc.path.is_dir():
-            meta[name] = {"error": f"path missing: {rc.path}"}
-            continue
-        try:
-            local_m = manifest.compute_local_manifest(rc.path)
-            git_m = manifest.compute_git_manifest(rc.path)
-            head_sha = git_ops.git_head_sha(rc.path)
-        except Exception as e:
-            meta[name] = {"error": str(e)}
-            continue
-        local_h = local_m.root_hash()
-        git_h = git_m.root_hash()
-        meta[name] = {
-            "local": local_h,
-            "git": git_h,
-            "server": None,
-            "server_commit_sha": None,
-            "short_sha": head_sha[:8],
-            "trinity": fp.trinity_fingerprint(local_h, git_h, None),
-        }
-        invariants = _collect_invariants(rc.path, __version__)
-        if name == "reflexivity":
-            state.reflexivity_path = rc.path
-            state.reflexivity_local_hash = local_h
-            state.reflexivity_git_hash = git_h
-            state.reflexivity_head_sha = head_sha
-            state.invariants_R = invariants
-        elif name == "platform":
-            state.platform_path = rc.path
-            state.platform_local_hash = local_h
-            state.platform_git_hash = git_h
-            state.platform_head_sha = head_sha
-            state.invariants_P = invariants
-
-    # --- F12: poll deployed apps' /__manifest -----------------------------
-    if servers:
-        for sname, sc in servers.items():
-            if not sc.token_file.is_file():
-                continue
-            token = sc.token_file.read_text(encoding="utf-8").strip()
-            try:
-                body = manifest.compute_server_manifest(
-                    sc.url, token, manifest_path=sc.manifest_path
-                )
-            except manifest.ServerManifestError:
-                continue
-            commit_sha = body.get("commit_sha")
-            mh = body.get("manifest_root_hash")
-            if sc.repo == "reflexivity":
-                state.reflexivity_server_hash = mh
-                state.reflexivity_server_commit_sha = commit_sha
-                meta.setdefault("reflexivity", {})
-                meta["reflexivity"]["server"] = mh
-                meta["reflexivity"]["server_commit_sha"] = commit_sha
-                meta["reflexivity"]["server_url"] = sc.url
-                # Recompute trinity now that we have all three legs.
-                if mh and meta["reflexivity"].get("local") and meta["reflexivity"].get("git"):
-                    meta["reflexivity"]["trinity"] = fp.trinity_fingerprint(
-                        meta["reflexivity"]["local"],
-                        meta["reflexivity"]["git"],
-                        mh,
-                    )
-            elif sc.repo == "platform":
-                state.platform_server_hash = mh
-                state.platform_server_commit_sha = commit_sha
-                meta.setdefault("platform", {})
-                meta["platform"]["server"] = mh
-                meta["platform"]["server_commit_sha"] = commit_sha
-                meta["platform"]["server_url"] = sc.url
-                if mh and meta["platform"].get("local") and meta["platform"].get("git"):
-                    meta["platform"]["trinity"] = fp.trinity_fingerprint(
-                        meta["platform"]["local"],
-                        meta["platform"]["git"],
-                        mh,
-                    )
-
-    return state, meta
+# `_build_state` and `_collect_invariants` moved to symverify.state_collect
+# at J1 so the daemon can share them. Local aliases kept for clarity.
+_collect_invariants = state_collect.collect_invariants
+_build_state = state_collect.build_state
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +337,100 @@ def init() -> None:
     # Defer to status (the command above) by invoking it programmatically.
     ctx = click.get_current_context()
     ctx.invoke(status, explain=False)
+
+
+# ---------------------------------------------------------------------------
+# `sym daemon` + service install/uninstall (Phase J)
+# ---------------------------------------------------------------------------
+
+
+@main.command("daemon")
+@click.option("--log-level", default="INFO", show_default=True,
+              help="logging.{DEBUG,INFO,WARNING,ERROR}")
+def daemon_cmd(log_level: str) -> None:
+    """Run the SymVerify daemon (filesystem + wake + hourly triggers).
+
+    Logs to stdout. For background operation on Windows, install via
+    `sym install-service` which schedules a logon-task using pythonw.exe
+    so no console window flashes.
+    """
+    import logging as _logging
+    from symverify import daemon as _daemon
+
+    _logging.basicConfig(
+        level=getattr(_logging, log_level.upper(), _logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    d = _daemon.Daemon()
+    d.run()
+
+
+@main.command("install-service")
+@click.option(
+    "--task-name", default=None,
+    help="Override the Scheduled Task name (default: 'Symmetism SymVerify Daemon').",
+)
+def install_service_cmd(task_name: str | None) -> None:
+    """Create a Windows Scheduled Task that runs `sym daemon` at logon.
+
+    Idempotent: re-running replaces the existing task. Linux/macOS: the
+    daemon can be invoked via systemd / launchd manually; this command
+    is Windows-only for v1.
+    """
+    if sys.platform != "win32":
+        click.echo("install-service is Windows-only for v1", err=True)
+        raise SystemExit(2)
+    from symverify import daemon as _daemon
+
+    name = task_name or _daemon.DEFAULT_TASK_NAME
+    try:
+        _daemon.install_windows_service(name)
+    except Exception as e:
+        click.echo(f"[error] {e}", err=True)
+        raise SystemExit(1)
+    click.echo(
+        f"installed Scheduled Task '{name}' — runs at every user logon, "
+        "unprivileged, no console window."
+    )
+
+
+@main.command("uninstall-service")
+@click.option("--task-name", default=None)
+def uninstall_service_cmd(task_name: str | None) -> None:
+    """Remove the Scheduled Task created by `sym install-service`."""
+    if sys.platform != "win32":
+        click.echo("uninstall-service is Windows-only for v1", err=True)
+        raise SystemExit(2)
+    from symverify import daemon as _daemon
+
+    name = task_name or _daemon.DEFAULT_TASK_NAME
+    try:
+        _daemon.uninstall_windows_service(name)
+    except Exception as e:
+        click.echo(f"[error] {e}", err=True)
+        raise SystemExit(1)
+    click.echo(f"removed Scheduled Task '{name}'.")
+
+
+@main.command("service-status")
+@click.option("--task-name", default=None)
+def service_status_cmd(task_name: str | None) -> None:
+    """Show whether the Scheduled Task is installed + its last run state."""
+    if sys.platform != "win32":
+        click.echo("service-status is Windows-only for v1", err=True)
+        raise SystemExit(2)
+    from symverify import daemon as _daemon
+
+    name = task_name or _daemon.DEFAULT_TASK_NAME
+    info = _daemon.query_windows_service(name)
+    console = Console()
+    if info is None:
+        console.print(f"[{render.MUTED}](not installed: '{name}')[/]")
+        raise SystemExit(1)
+    console.print(f"[{render.STABLE}]✓[/] Scheduled Task installed: [{render.STABLE}]{name}[/]")
+    for k in ("TaskName", "Status", "Last Run Time", "Next Run Time", "Last Result"):
+        if k in info:
+            console.print(f"  [{render.MUTED}]{k}:[/] {info[k]}")
 
 
 # ---------------------------------------------------------------------------
