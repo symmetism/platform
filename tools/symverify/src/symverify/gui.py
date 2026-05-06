@@ -9,11 +9,11 @@ Three custom widgets render the visual state:
   - TrinityRings: 3 concentric circles + 3 colored dots whose
     positions encode aligned/drift/alarm — same iconography as the
     public verify page (apps/attestation-service/static/verify.js).
-  - Mascot: pixel-art character built from platonic-solid shapes
-    (octahedron head, cube body, tetrahedron feet). Idle-bobs and
-    reacts to status transitions and button clicks.
-  - The narrative panel (now taller) ships with a one-click copy
-    button.
+  - PlatonicCycle: pixel-art animation that cycles through the five
+    Platonic solids (tetra → cube → octa → dodeca → icosa), each
+    rendered as a slowly-rotating wireframe. Purely decorative.
+  - The narrative panel (now full-height) ships with a one-click
+    copy button.
 
 Why this design:
   - The daemon is the source of truth; the GUI only renders what's
@@ -240,40 +240,130 @@ class TrinityRings(tk.Canvas):
 
 
 # ---------------------------------------------------------------------------
-# Mascot — pixel-art character built from platonic-solid silhouettes.
-# Idle-bobs and reacts to status changes + button presses.
+# PlatonicCycle — pixel-art animation that cycles through the five
+# Platonic solids: tetrahedron → cube → octahedron → dodecahedron →
+# icosahedron, then back to tetrahedron. Each shape rotates slowly
+# while held, then snap-transitions to the next.
 # ---------------------------------------------------------------------------
 
 
-class Mascot(tk.Canvas):
-    """Tiny pixel-art companion. Body parts:
-      head:  octahedron silhouette (diamond)
-      torso: cube silhouette (square with isometric edges)
-      feet:  two tetrahedron silhouettes (triangles)
-      eyes:  state-dependent (•_• calm, ^_^ happy, x_x alarm, o_o surprise)
+class PlatonicCycle(tk.Canvas):
+    """A small canvas that draws one of the five Platonic solids at a
+    time, slowly rotating, and cycles to the next every few seconds.
 
-    Each "pixel" is a PIXEL_SCALE × PIXEL_SCALE actual rect, giving
-    the chunky retro look the user asked for. Animation is driven by
-    a self-scheduled after() loop at ~12 fps so the whole thing only
-    re-renders when something visually changes.
+    Each solid is rendered as a wireframe-pixel-art silhouette: we
+    project a 3D edge list to 2D with a rotating Y-axis and rasterize
+    every edge with Bresenham-style line steps onto a pixel grid,
+    then paint each grid cell as a chunky `PIXEL_SCALE`-pixel rect.
+    The result is a recognizable wireframe of each solid that pulses
+    and rotates without leaving stdlib tk.
+
+    No state — purely decorative. The audit pipeline drives nothing
+    here, and nothing here drives the audit pipeline.
     """
 
     PIXEL_SCALE = 3
-    SPRITE_W = 22  # pixels of sprite art (not actual canvas px)
-    SPRITE_H = 26
-    CANVAS_W = SPRITE_W * PIXEL_SCALE
-    CANVAS_H = SPRITE_H * PIXEL_SCALE + 12  # extra room for the bob
-    FRAME_MS = 80  # ~12 fps
+    GRID = 22                 # pixel grid is GRID × GRID per shape
+    CANVAS_W = GRID * PIXEL_SCALE
+    CANVAS_H = GRID * PIXEL_SCALE
+    FRAME_MS = 60             # ~16 fps
 
-    # Body palette — pulled from same hex set as the rings so the
-    # whole window stays color-consistent.
-    SKIN = "#c9d1d9"
-    SKIN_SHADE = "#7c8694"
-    OUTLINE = "#0f1116"
-    EYE_COLOR = "#0f1116"
-    HEAD_HAPPY = "#7CD3A0"
-    HEAD_DRIFT = "#E0B341"
-    HEAD_ALARM = "#E06D6D"
+    HOLD_FRAMES = 60          # ~3.6 s per shape before snapping to next
+    EDGE_COLOR = "#7eb6d9"    # match aligned-state blue
+
+    PHI = (1 + 5 ** 0.5) / 2  # golden ratio, used in icos/dodec verts
+
+    # ------ vertex / edge tables -------------------------------------------
+    # Vertices live on the unit sphere-ish; we scale to fit the GRID.
+    # Edges are indices into the vertex list. Sources: standard CG
+    # references; double-checked the edge counts to match the Platonic
+    # numbers: tet=6, cube=12, oct=12, dodec=30, icos=30.
+
+    @staticmethod
+    def _tetrahedron():
+        v = [
+            (1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1),
+        ]
+        e = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+        return v, e
+
+    @staticmethod
+    def _cube():
+        v = [
+            (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
+            (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1),
+        ]
+        e = [
+            (0, 1), (1, 2), (2, 3), (3, 0),       # back face
+            (4, 5), (5, 6), (6, 7), (7, 4),       # front face
+            (0, 4), (1, 5), (2, 6), (3, 7),       # connecting edges
+        ]
+        return v, e
+
+    @staticmethod
+    def _octahedron():
+        v = [
+            (1, 0, 0), (-1, 0, 0),
+            (0, 1, 0), (0, -1, 0),
+            (0, 0, 1), (0, 0, -1),
+        ]
+        e = [
+            (0, 2), (0, 3), (0, 4), (0, 5),
+            (1, 2), (1, 3), (1, 4), (1, 5),
+            (2, 4), (2, 5), (3, 4), (3, 5),
+        ]
+        return v, e
+
+    @classmethod
+    def _icosahedron(cls):
+        p = cls.PHI
+        v = [
+            (0, 1, p), (0, -1, p), (0, 1, -p), (0, -1, -p),
+            (1, p, 0), (-1, p, 0), (1, -p, 0), (-1, -p, 0),
+            (p, 0, 1), (-p, 0, 1), (p, 0, -1), (-p, 0, -1),
+        ]
+        e = [
+            (0, 1), (0, 4), (0, 5), (0, 8), (0, 9),
+            (1, 6), (1, 7), (1, 8), (1, 9),
+            (2, 3), (2, 4), (2, 5), (2, 10), (2, 11),
+            (3, 6), (3, 7), (3, 10), (3, 11),
+            (4, 5), (4, 8), (4, 10),
+            (5, 9), (5, 11),
+            (6, 7), (6, 8), (6, 10),
+            (7, 9), (7, 11),
+            (8, 10), (9, 11),
+        ]
+        return v, e
+
+    @classmethod
+    def _dodecahedron(cls):
+        p = cls.PHI
+        ip = 1 / p
+        v = [
+            ( 1,  1,  1), ( 1,  1, -1), ( 1, -1,  1), ( 1, -1, -1),
+            (-1,  1,  1), (-1,  1, -1), (-1, -1,  1), (-1, -1, -1),
+            ( 0,  ip,  p), ( 0,  ip, -p), ( 0, -ip,  p), ( 0, -ip, -p),
+            ( ip,  p,  0), ( ip, -p,  0), (-ip,  p,  0), (-ip, -p,  0),
+            ( p,  0,  ip), ( p,  0, -ip), (-p,  0,  ip), (-p,  0, -ip),
+        ]
+        e = [
+            (0, 8), (0, 12), (0, 16), (1, 9), (1, 12), (1, 17),
+            (2, 10), (2, 13), (2, 16), (3, 11), (3, 13), (3, 17),
+            (4, 8), (4, 14), (4, 18), (5, 9), (5, 14), (5, 19),
+            (6, 10), (6, 15), (6, 18), (7, 11), (7, 15), (7, 19),
+            (8, 10), (9, 11), (12, 14), (13, 15), (16, 17), (18, 19),
+        ]
+        return v, e
+
+    SHAPES: list[tuple[str, callable]] = [
+        ("tetrahedron",  _tetrahedron),
+        ("cube",         _cube),
+        ("octahedron",   _octahedron),
+        ("dodecahedron", _dodecahedron),
+        ("icosahedron",  _icosahedron),
+    ]
+
+    # ------ widget ---------------------------------------------------------
 
     def __init__(self, master, **kw):
         super().__init__(
@@ -284,147 +374,77 @@ class Mascot(tk.Canvas):
             highlightthickness=0,
             **kw,
         )
-        # Animation state
         self._tick = 0
-        self._mood: str = "calm"          # calm | happy | worried | alarm
-        self._action: str | None = None   # transient: 'jump'|'shake'|'think'
-        self._action_until_tick: int = 0
+        self._shape_idx = 0
         self._draw()
         self.after(self.FRAME_MS, self._loop)
-
-    # -- public --------------------------------------------------------------
-
-    def set_mood(self, mood: str) -> None:
-        self._mood = mood
-
-    def react(self, kind: str, duration_frames: int = 12) -> None:
-        """Trigger a transient reaction animation (jump / shake / think).
-        Returns to the underlying mood when frames elapse."""
-        self._action = kind
-        self._action_until_tick = self._tick + duration_frames
-
-    # -- animation loop ------------------------------------------------------
 
     def _loop(self) -> None:
         try:
             self._tick += 1
-            if self._action and self._tick >= self._action_until_tick:
-                self._action = None
+            if self._tick % self.HOLD_FRAMES == 0:
+                self._shape_idx = (self._shape_idx + 1) % len(self.SHAPES)
             self._draw()
         finally:
             self.after(self.FRAME_MS, self._loop)
 
-    # -- drawing -------------------------------------------------------------
+    # ------ drawing --------------------------------------------------------
 
-    def _px(self, x: int, y: int, w: int = 1, h: int = 1, fill: str = SKIN) -> None:
-        s = self.PIXEL_SCALE
-        self.create_rectangle(
-            x * s, y * s, (x + w) * s, (y + h) * s,
-            fill=fill, outline="",
-        )
+    def _project(self, vert: tuple[float, float, float], theta: float):
+        """Rotate around Y-axis by theta, then orthographic project to (x, y).
+        We add a tiny X-axis tilt so the shape isn't head-on flat."""
+        x, y, z = vert
+        # Y-axis rotation
+        cy, sy = math.cos(theta), math.sin(theta)
+        x2 = x * cy + z * sy
+        z2 = -x * sy + z * cy
+        # Subtle constant X-axis tilt (~25°) for depth
+        tilt = 0.45
+        ct, st = math.cos(tilt), math.sin(tilt)
+        y2 = y * ct - z2 * st
+        return x2, y2
 
     def _draw(self) -> None:
         self.delete("all")
+        name, fn = self.SHAPES[self._shape_idx][0], self.SHAPES[self._shape_idx][1]
+        verts3, edges = fn()
 
-        # Bob: idle gentle sine; jump: stronger arc; shake: horizontal jitter.
-        bob_y = 0
-        bob_x = 0
-        if self._action == "jump":
-            # one full arc over duration
-            t = (self._action_until_tick - self._tick) / 12.0
-            bob_y = int(-8 * math.sin(math.pi * (1 - t)))
-        elif self._action == "shake":
-            bob_x = int(2 * math.sin(self._tick * 1.4))
-        elif self._action == "think":
-            bob_y = int(math.sin(self._tick / 2.0))
-        else:
-            bob_y = int(2 * math.sin(self._tick / 6.0))
+        theta = (self._tick % 360) * (math.pi / 90.0)  # slow steady spin
 
-        cx = self.SPRITE_W // 2 + bob_x
-        head_top = 2 + bob_y
+        # Project all verts; find bounds for scaling.
+        projected = [self._project(v, theta) for v in verts3]
+        xs = [p[0] for p in projected]
+        ys = [p[1] for p in projected]
+        max_extent = max(max(abs(min(xs)), abs(max(xs))),
+                          max(abs(min(ys)), abs(max(ys))), 0.001)
+        # Leave a 1-pixel margin inside the grid.
+        scale = (self.GRID / 2 - 1) / max_extent
+        cx = self.GRID / 2
+        cy = self.GRID / 2
 
-        # ---- head (octahedron silhouette: diamond) -------------------------
-        head_color = {
-            "calm": self.SKIN,
-            "happy": self.HEAD_HAPPY,
-            "worried": self.HEAD_DRIFT,
-            "alarm": self.HEAD_ALARM,
-        }.get(self._mood, self.SKIN)
+        pts = [(cx + px * scale, cy + py * scale) for px, py in projected]
 
-        # Diamond drawn row-by-row (chunky pixel art):
-        #     #
-        #    ###
-        #   #####
-        #  #######
-        #   #####
-        #    ###
-        #     #
-        head_rows = [
-            (cx,     head_top,     1, 1),  # top point
-            (cx - 1, head_top + 1, 3, 1),
-            (cx - 2, head_top + 2, 5, 1),
-            (cx - 3, head_top + 3, 7, 1),
-            (cx - 2, head_top + 4, 5, 1),
-            (cx - 1, head_top + 5, 3, 1),
-            (cx,     head_top + 6, 1, 1),
-        ]
-        for x, y, w, h in head_rows:
-            self._px(x, y, w, h, head_color)
+        # Rasterize each edge by stepping integer points along it.
+        # Pixel set ensures we don't draw the same square twice.
+        pixels: set[tuple[int, int]] = set()
+        for a, b in edges:
+            x1, y1 = pts[a]
+            x2, y2 = pts[b]
+            steps = max(int(math.hypot(x2 - x1, y2 - y1) * 1.2), 1)
+            for s in range(steps + 1):
+                t = s / steps
+                px = int(round(x1 + (x2 - x1) * t))
+                py = int(round(y1 + (y2 - y1) * t))
+                if 0 <= px < self.GRID and 0 <= py < self.GRID:
+                    pixels.add((px, py))
 
-        # Eyes — change with mood.
-        eye_y = head_top + 3
-        if self._mood == "happy":
-            # ^ ^
-            self._px(cx - 2, eye_y, 1, 1, self.EYE_COLOR)
-            self._px(cx - 1, eye_y - 1, 1, 1, self.EYE_COLOR)
-            self._px(cx + 1, eye_y - 1, 1, 1, self.EYE_COLOR)
-            self._px(cx + 2, eye_y, 1, 1, self.EYE_COLOR)
-        elif self._mood == "alarm":
-            # x x
-            self._px(cx - 2, eye_y, 1, 1, self.EYE_COLOR)
-            self._px(cx - 1, eye_y, 1, 1, self.EYE_COLOR)
-            self._px(cx + 1, eye_y, 1, 1, self.EYE_COLOR)
-            self._px(cx + 2, eye_y, 1, 1, self.EYE_COLOR)
-        elif self._mood == "worried":
-            # • •  (offset down-right slightly)
-            self._px(cx - 2, eye_y + 1, 1, 1, self.EYE_COLOR)
-            self._px(cx + 1, eye_y + 1, 1, 1, self.EYE_COLOR)
-        else:
-            # calm: blink occasionally
-            blink = (self._tick // 20) % 6 == 0
-            if blink:
-                self._px(cx - 2, eye_y + 1, 1, 1, self.EYE_COLOR)
-                self._px(cx + 1, eye_y + 1, 1, 1, self.EYE_COLOR)
-            else:
-                self._px(cx - 2, eye_y, 1, 1, self.EYE_COLOR)
-                self._px(cx + 1, eye_y, 1, 1, self.EYE_COLOR)
-
-        # ---- torso (cube silhouette: square + isometric edge highlight) ----
-        torso_top = head_top + 7
-        # 8x8 square body
-        for y in range(8):
-            self._px(cx - 3, torso_top + y, 7, 1, self.SKIN)
-        # Isometric "lid" hint (top-right diagonal shading).
-        self._px(cx + 1, torso_top, 3, 1, self.SKIN_SHADE)
-        self._px(cx + 2, torso_top + 1, 2, 1, self.SKIN_SHADE)
-        self._px(cx + 3, torso_top + 2, 1, 1, self.SKIN_SHADE)
-
-        # Outline corners (pixel-art bevel).
-        self._px(cx - 3, torso_top, 1, 1, self.OUTLINE)
-        self._px(cx + 3, torso_top, 1, 1, self.OUTLINE)
-        self._px(cx - 3, torso_top + 7, 1, 1, self.OUTLINE)
-        self._px(cx + 3, torso_top + 7, 1, 1, self.OUTLINE)
-
-        # ---- feet (two tetrahedron silhouettes: small triangles) -----------
-        feet_top = torso_top + 8
-        # left foot
-        self._px(cx - 3, feet_top, 1, 1, self.SKIN)
-        self._px(cx - 3, feet_top + 1, 2, 1, self.SKIN)
-        self._px(cx - 3, feet_top + 2, 3, 1, self.SKIN)
-        # right foot
-        self._px(cx + 3, feet_top, 1, 1, self.SKIN)
-        self._px(cx + 2, feet_top + 1, 2, 1, self.SKIN)
-        self._px(cx + 1, feet_top + 2, 3, 1, self.SKIN)
+        # Paint pixels.
+        ps = self.PIXEL_SCALE
+        for (px, py) in pixels:
+            self.create_rectangle(
+                px * ps, py * ps, (px + 1) * ps, (py + 1) * ps,
+                fill=self.EDGE_COLOR, outline="",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -451,8 +471,8 @@ class SymGUI(ctk.CTk):
         super().__init__()
 
         self.title(f"Symmetism Coherence — sym v{__version__}")
-        self.geometry("680x740")
-        self.minsize(560, 600)
+        self.geometry("680x880")
+        self.minsize(560, 720)
         self.configure(fg_color=COLOR_BG)
 
         self._build_layout()
@@ -607,7 +627,7 @@ class SymGUI(ctk.CTk):
             text_color=COLOR_TEXT,
             fg_color=COLOR_BG,
             wrap="word",
-            height=180,         # taller — fits ~10 lines of narrative
+            height=320,         # tall enough for full narratives without scroll
         )
         self.text_narrative.grid(row=1, column=0, padx=12, pady=(4, 8), sticky="nsew")
         self.text_narrative.insert("1.0", "(no narrative yet — click Explain)")
@@ -647,15 +667,13 @@ class SymGUI(ctk.CTk):
         )
         self.btn_settings.grid(row=0, column=4, padx=4, sticky="ew")
 
-        # Mascot — pixel-art companion in the bottom-right corner.
-        # Uses place() so it floats over its row, but we anchor it to
-        # the lower-right of the main window via lift().
-        # Mascot — pixel-art companion in the bottom-right corner.
-        # place() puts it on top of the button row by virtue of later-
-        # created z-order; we don't call tkraise() because Canvas
-        # overrides both lift/tkraise to operate on canvas items.
-        self.mascot = Mascot(self)
-        self.mascot.place(relx=1.0, rely=1.0, x=-12, y=-12, anchor="se")
+        # Platonic-solids cycle — purely decorative, bottom-right corner.
+        # Cycles tetra → cube → octa → dodeca → icosa, slow spin per
+        # shape, no reaction to status (information already lives in
+        # the rings + brackets + narrative). Canvas overrides lift()
+        # for canvas items, so we rely on place()'s natural z-order.
+        self.solids = PlatonicCycle(self)
+        self.solids.place(relx=1.0, rely=1.0, x=-12, y=-12, anchor="se")
 
     # ----- refresh ----------------------------------------------------------
 
@@ -682,8 +700,6 @@ class SymGUI(ctk.CTk):
                 text_color=COLOR_MUTED,
             )
             self.rings.set_state("drift")
-            if hasattr(self, "mascot"):
-                self.mascot.set_mood("worried")
             return
 
         self.label_fold.configure(text=status.get("system_fold") or "SYM-?")
@@ -703,14 +719,9 @@ class SymGUI(ctk.CTk):
             text_color=_status_color("drift_alarm" if alarm else overall),
         )
 
-        # Rings indicator + mascot mood track the same coherence state
-        # the public verify page uses.
-        coh = coherence_state(status)
-        self.rings.set_state(coh)
-        if hasattr(self, "mascot"):
-            self.mascot.set_mood(
-                {"aligned": "happy", "drift": "worried", "alarm": "alarm"}[coh]
-            )
+        # Rings indicator tracks the same coherence state the public
+        # verify page uses.
+        self.rings.set_state(coherence_state(status))
 
         # Repo rows
         trinity = status.get("trinity") or {}
@@ -771,8 +782,6 @@ class SymGUI(ctk.CTk):
     def _action_audit(self) -> None:
         """Force a fresh audit cycle. Runs in a thread to avoid blocking Tk."""
         self.btn_audit.configure(state="disabled", text="Auditing…")
-        if hasattr(self, "mascot"):
-            self.mascot.react("shake", duration_frames=20)
 
         def work() -> None:
             try:
@@ -797,8 +806,6 @@ class SymGUI(ctk.CTk):
             self._set_narrative("(no current snapshot to explain — try Audit Now first)")
             return
         self.btn_explain.configure(state="disabled", text="Asking…")
-        if hasattr(self, "mascot"):
-            self.mascot.react("think", duration_frames=30)
 
         def work() -> None:
             try:
@@ -870,9 +877,6 @@ class SymGUI(ctk.CTk):
         # Quick visual confirmation: button label flashes "Copied".
         self.btn_copy_narrative.configure(text="Copied ✓")
         self.after(1200, lambda: self.btn_copy_narrative.configure(text="Copy"))
-        # Mascot reaction.
-        if hasattr(self, "mascot"):
-            self.mascot.react("jump", duration_frames=12)
 
 
 # ---------------------------------------------------------------------------

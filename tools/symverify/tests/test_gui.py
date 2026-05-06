@@ -153,3 +153,40 @@ def test_trinity_rings_color_table_matches_verify_page():
     assert gui.TrinityRings.DOT_FILL["aligned"] == "#7eb6d9"
     assert gui.TrinityRings.DOT_FILL["drift"] == "#e0a458"
     assert gui.TrinityRings.DOT_FILL["alarm"] == "#cc4444"
+
+
+# ---------------------------------------------------------------------------
+# PlatonicCycle — vertex/edge tables must match Euler's formula V−E+F=2.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name,fn,expected_vertices,expected_edges",
+    [
+        ("tetrahedron",  gui.PlatonicCycle._tetrahedron,  4, 6),
+        ("cube",         gui.PlatonicCycle._cube,         8, 12),
+        ("octahedron",   gui.PlatonicCycle._octahedron,   6, 12),
+        ("dodecahedron", gui.PlatonicCycle._dodecahedron, 20, 30),
+        ("icosahedron",  gui.PlatonicCycle._icosahedron,  12, 30),
+    ],
+)
+def test_platonic_solid_topology_is_correct(name, fn, expected_vertices, expected_edges):
+    """Each Platonic solid has a known fixed (V, E) pair."""
+    verts, edges = fn()
+    assert len(verts) == expected_vertices, f"{name}: V mismatch"
+    assert len(edges) == expected_edges, f"{name}: E mismatch"
+    # Edges must reference valid vertex indices.
+    for a, b in edges:
+        assert 0 <= a < len(verts) and 0 <= b < len(verts), \
+            f"{name}: edge {(a, b)} references missing vertex"
+    # No self-loops, no duplicate edges (treating undirected).
+    edge_set = {tuple(sorted(e)) for e in edges}
+    assert len(edge_set) == len(edges), f"{name}: duplicate edges"
+    assert all(a != b for a, b in edges), f"{name}: self-loop edge"
+
+
+def test_platonic_cycle_lists_five_shapes():
+    names = [name for name, _ in gui.PlatonicCycle.SHAPES]
+    assert names == [
+        "tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron",
+    ]
