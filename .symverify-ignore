@@ -1,0 +1,4 @@
+# Symmetism / Platform — patterns SymVerify excludes from manifest computation
+# (in addition to .gitignore patterns). Empty initially; populate when local
+# scratch dirs or build artifacts that should be excluded from the manifest
+# even when they accidentally make it into the working tree.

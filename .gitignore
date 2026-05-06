@@ -1,0 +1,59 @@
+# Symmetism / Platform — gitignore
+# Per _command/03_SOT_STACK.md and 02_SOT_RULES.md R3.
+
+# --- Python (Stack SoT S1: Python ≥3.11 with uv) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# --- Virtual environments / package managers ---
+.venv/
+venv/
+env/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Build artifacts ---
+*.tar
+*.tar.gz
+
+# --- Local environment / secrets (R3: never tracked) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secret*.toml
+secrets/

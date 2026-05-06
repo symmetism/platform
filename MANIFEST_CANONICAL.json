@@ -1,0 +1,5 @@
+{
+  "schema": "symverify-canonical/1",
+  "comment": "Canonical anchors for Platform. Empty initially. Files marked policy:immutable here are mechanically protected by Platform/.githooks/pre-commit and the verify-canonical GitHub Actions workflow. Adding an immutable anchor is itself an evolution event: the new entry's path+sha256 are added, this file is committed, and Q_canonical's expected_value in _command/STABILIZER_REGISTRY.json is recomputed accordingly.",
+  "anchors": []
+}
