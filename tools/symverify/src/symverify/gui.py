@@ -262,10 +262,8 @@ class PlatonicCycle(tk.Canvas):
     here, and nothing here drives the audit pipeline.
     """
 
-    PIXEL_SCALE = 3
-    GRID = 22                 # pixel grid is GRID × GRID per shape
-    CANVAS_W = GRID * PIXEL_SCALE
-    CANVAS_H = GRID * PIXEL_SCALE
+    PIXEL_SCALE_DEFAULT = 3
+    GRID_DEFAULT = 22         # pixel grid is GRID × GRID per shape
     FRAME_MS = 60             # ~16 fps
 
     HOLD_FRAMES = 60          # ~3.6 s per shape before snapping to next
@@ -365,12 +363,25 @@ class PlatonicCycle(tk.Canvas):
 
     # ------ widget ---------------------------------------------------------
 
-    def __init__(self, master, **kw):
+    def __init__(
+        self,
+        master,
+        *,
+        pixel_scale: int = PIXEL_SCALE_DEFAULT,
+        grid: int = GRID_DEFAULT,
+        bg: str = COLOR_PANEL,
+        **kw,
+    ):
+        # Note: stored as `pixel_size` not `grid` because tk.Canvas already
+        # has a `.grid()` method (inherited from Misc) for layout — assigning
+        # to self.grid would shadow it and break .grid() calls on this widget.
+        self.pixel_size = pixel_scale
+        self.grid_dim = grid
         super().__init__(
             master,
-            width=self.CANVAS_W,
-            height=self.CANVAS_H,
-            bg=COLOR_BG,
+            width=grid * pixel_scale,
+            height=grid * pixel_scale,
+            bg=bg,
             highlightthickness=0,
             **kw,
         )
@@ -418,9 +429,9 @@ class PlatonicCycle(tk.Canvas):
         max_extent = max(max(abs(min(xs)), abs(max(xs))),
                           max(abs(min(ys)), abs(max(ys))), 0.001)
         # Leave a 1-pixel margin inside the grid.
-        scale = (self.GRID / 2 - 1) / max_extent
-        cx = self.GRID / 2
-        cy = self.GRID / 2
+        scale = (self.grid_dim / 2 - 1) / max_extent
+        cx = self.grid_dim / 2
+        cy = self.grid_dim / 2
 
         pts = [(cx + px * scale, cy + py * scale) for px, py in projected]
 
@@ -435,11 +446,11 @@ class PlatonicCycle(tk.Canvas):
                 t = s / steps
                 px = int(round(x1 + (x2 - x1) * t))
                 py = int(round(y1 + (y2 - y1) * t))
-                if 0 <= px < self.GRID and 0 <= py < self.GRID:
+                if 0 <= px < self.grid_dim and 0 <= py < self.grid_dim:
                     pixels.add((px, py))
 
         # Paint pixels.
-        ps = self.PIXEL_SCALE
+        ps = self.pixel_size
         for (px, py) in pixels:
             self.create_rectangle(
                 px * ps, py * ps, (px + 1) * ps, (py + 1) * ps,
@@ -619,7 +630,17 @@ class SymGUI(ctk.CTk):
             fg_color=COLOR_MUTED, hover_color="#7B8593",
             command=self._action_copy_narrative,
         )
-        self.btn_copy_narrative.grid(row=0, column=1, sticky="e")
+        self.btn_copy_narrative.grid(row=0, column=1, sticky="e", padx=(0, 8))
+
+        # Platonic-solids cycle — top-right corner of the narrative
+        # panel, same panel-color background so it blends in. Smaller
+        # pixel scale than the standalone version (it lives in a header
+        # bar, not a corner). Cycles tetra → cube → octa → dodeca →
+        # icosa, slow spin per shape, purely decorative.
+        self.solids = PlatonicCycle(
+            narr_header, pixel_scale=2, grid=24, bg=COLOR_PANEL,
+        )
+        self.solids.grid(row=0, column=2, sticky="e")
 
         self.text_narrative = ctk.CTkTextbox(
             narrative,
@@ -667,13 +688,6 @@ class SymGUI(ctk.CTk):
         )
         self.btn_settings.grid(row=0, column=4, padx=4, sticky="ew")
 
-        # Platonic-solids cycle — purely decorative, bottom-right corner.
-        # Cycles tetra → cube → octa → dodeca → icosa, slow spin per
-        # shape, no reaction to status (information already lives in
-        # the rings + brackets + narrative). Canvas overrides lift()
-        # for canvas items, so we rely on place()'s natural z-order.
-        self.solids = PlatonicCycle(self)
-        self.solids.place(relx=1.0, rely=1.0, x=-12, y=-12, anchor="se")
 
     # ----- refresh ----------------------------------------------------------
 
