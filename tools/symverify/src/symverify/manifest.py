@@ -159,3 +159,75 @@ def compute_git_manifest(repo_path: str | Path, ref: str = "HEAD") -> Manifest:
             ManifestEntry(path=norm, mode=_normalize_mode(mode), size=size, sha256=sha)
         )
     return Manifest(entries=entries)
+
+
+# ---------------------------------------------------------------------------
+# Server manifest (third trinity leg)
+# ---------------------------------------------------------------------------
+
+
+class ServerManifestError(RuntimeError):
+    """Raised when /__manifest can't be fetched or parsed."""
+
+
+def compute_server_manifest(
+    server_url: str,
+    token: str,
+    *,
+    manifest_path: str = "/__manifest",
+    timeout: float = 5.0,
+) -> dict:
+    """Fetch and parse the deployed app's `/__manifest` endpoint.
+
+    Returns the JSON body as a dict, expected to contain at least:
+        spec, manifest_root_hash, file_count, commit_sha, built_at, version
+
+    Raises ServerManifestError on network/HTTP/JSON errors. Three
+    retries with linear backoff (5s, 10s, 15s) on transient failures
+    per Process SoT P9.
+    """
+    import json
+    import time
+
+    import httpx
+
+    url = f"{server_url.rstrip('/')}{manifest_path}"
+    headers = {
+        "X-Symverify-Token": token,
+        "Accept": "application/json",
+    }
+
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate([0, 5, 10, 15]):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = httpx.get(url, headers=headers, timeout=timeout)
+        except httpx.HTTPError as e:
+            last_exc = e
+            continue
+        if resp.status_code == 401:
+            raise ServerManifestError(
+                f"401 unauthorized at {url} — check SYMVERIFY_TOKEN"
+            )
+        if resp.status_code == 503:
+            raise ServerManifestError(
+                f"503 from {url} — SYMVERIFY_TOKEN unset on server"
+            )
+        if 500 <= resp.status_code < 600:
+            last_exc = ServerManifestError(f"{resp.status_code} from {url}")
+            continue  # transient, retry
+        if resp.status_code != 200:
+            raise ServerManifestError(
+                f"unexpected {resp.status_code} from {url}: "
+                f"{resp.text[:200]}"
+            )
+        try:
+            return resp.json()
+        except json.JSONDecodeError as e:
+            raise ServerManifestError(
+                f"invalid JSON at {url}: {e}"
+            ) from e
+    raise ServerManifestError(
+        f"failed after retries: {last_exc}"
+    ) from last_exc

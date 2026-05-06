@@ -128,13 +128,22 @@ class State:
     reflexivity_path: Path | None = None
     platform_path: Path | None = None
 
-    # Trinity inputs (root_hash hex strings)
+    # Trinity inputs (manifest root_hash hex strings)
     reflexivity_local_hash: str | None = None
     reflexivity_git_hash: str | None = None
     reflexivity_server_hash: str | None = None
     platform_local_hash: str | None = None
     platform_git_hash: str | None = None
     platform_server_hash: str | None = None
+
+    # F12: commit-SHA alignment between operator's HEAD and deployed image.
+    # `*_head_sha` is local git rev-parse HEAD; `*_server_commit_sha` is
+    # what the deployed app reported via /__manifest. When both are set
+    # and equal, the trinity's commit-leg is conserved.
+    reflexivity_head_sha: str | None = None
+    reflexivity_server_commit_sha: str | None = None
+    platform_head_sha: str | None = None
+    platform_server_commit_sha: str | None = None
 
     # Cross-repo invariants pre-computed by the caller
     invariants_R: dict[str, str] = field(default_factory=dict)
@@ -341,8 +350,18 @@ def _trinity_bracket(
     local: str | None,
     git: str | None,
     server: str | None,
+    head_sha: str | None = None,
+    server_commit_sha: str | None = None,
 ) -> Bracket:
-    """Shared trinity logic for Q_trinity_R / Q_trinity_P."""
+    """Shared trinity logic for Q_trinity_R / Q_trinity_P.
+
+    F12 update: if both head_sha and server_commit_sha are provided we
+    add a "commit-leg" check (head_sha == server_commit_sha). This is
+    the strongest signal of trinity completion — the deployed image
+    was built from the same commit the operator currently has at HEAD.
+    A mismatch on this is treated as `git≠server` (drift_expected when
+    the registry pattern matches; alarm if the patterns are stripped).
+    """
     if local is None and git is None:
         return Bracket(
             charge_id=charge.id,
@@ -354,17 +373,27 @@ def _trinity_bracket(
     parts: list[str] = []
     if local is not None and git is not None and local != git:
         parts.append("local≠git")
-    if server is None:
+
+    # Server-leg semantics:
+    #   - server hash absent and no commit_sha -> no_server_yet
+    #   - server commit_sha provided and matches HEAD -> server leg ✓
+    #     (overrides any manifest-hash mismatch — manifest-hash compare
+    #      is fragile across path-scope differences; commit-sha is the
+    #      authoritative deploy marker).
+    #   - server commit_sha differs from HEAD -> git≠server
+    if server is None and server_commit_sha is None:
         parts.append("no_server_yet")
-    else:
-        if git is not None and git != server:
+    elif server_commit_sha is not None and head_sha is not None:
+        if server_commit_sha != head_sha:
             parts.append("git≠server")
-        # History rewrite detector: local agrees with server, but git
-        # diverges from both. Should be impossible under branch protection
-        # — it's the signature of someone rewriting committed history.
+    else:
+        # Fallback to hash compare only.
+        if server is not None and git is not None and git != server:
+            parts.append("git≠server")
         if (
             local is not None
             and git is not None
+            and server is not None
             and local == server
             and git != local
         ):
@@ -407,6 +436,8 @@ def compute_q_trinity_R(state: State, charge: ChargeSpec) -> Bracket:
         state.reflexivity_local_hash,
         state.reflexivity_git_hash,
         state.reflexivity_server_hash,
+        head_sha=state.reflexivity_head_sha,
+        server_commit_sha=state.reflexivity_server_commit_sha,
     )
 
 
@@ -416,6 +447,8 @@ def compute_q_trinity_P(state: State, charge: ChargeSpec) -> Bracket:
         state.platform_local_hash,
         state.platform_git_hash,
         state.platform_server_hash,
+        head_sha=state.platform_head_sha,
+        server_commit_sha=state.platform_server_commit_sha,
     )
 
 

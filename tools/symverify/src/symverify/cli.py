@@ -88,11 +88,17 @@ def _collect_invariants(repo_path: Path, version: str) -> dict[str, str]:
     return inv
 
 
-def _build_state(repos: dict[str, config.RepoConfig]) -> tuple[State, dict[str, dict]]:
-    """Compute manifests + invariants for both repos. Server slots stay None
-    until Phase F. Returns (state, per_repo_metadata) where metadata holds
-    short SHAs and trinity fingerprints for display.
+def _build_state(
+    repos: dict[str, config.RepoConfig],
+    servers: dict[str, config.ServerConfig] | None = None,
+) -> tuple[State, dict[str, dict]]:
+    """Compute manifests + invariants for both repos, then poll any
+    configured servers' /__manifest endpoints (F12). Returns
+    (state, per_repo_metadata) where metadata holds short SHAs, trinity
+    fingerprints, and server commit_sha+manifest_root_hash for display.
     """
+    from symverify import git_ops
+
     state = State(symverify_version=__version__)
     meta: dict[str, dict] = {}
     for name, rc in repos.items():
@@ -102,6 +108,7 @@ def _build_state(repos: dict[str, config.RepoConfig]) -> tuple[State, dict[str, 
         try:
             local_m = manifest.compute_local_manifest(rc.path)
             git_m = manifest.compute_git_manifest(rc.path)
+            head_sha = git_ops.git_head_sha(rc.path)
         except Exception as e:
             meta[name] = {"error": str(e)}
             continue
@@ -111,7 +118,8 @@ def _build_state(repos: dict[str, config.RepoConfig]) -> tuple[State, dict[str, 
             "local": local_h,
             "git": git_h,
             "server": None,
-            "short_sha": git_h[:8],
+            "server_commit_sha": None,
+            "short_sha": head_sha[:8],
             "trinity": fp.trinity_fingerprint(local_h, git_h, None),
         }
         invariants = _collect_invariants(rc.path, __version__)
@@ -119,12 +127,57 @@ def _build_state(repos: dict[str, config.RepoConfig]) -> tuple[State, dict[str, 
             state.reflexivity_path = rc.path
             state.reflexivity_local_hash = local_h
             state.reflexivity_git_hash = git_h
+            state.reflexivity_head_sha = head_sha
             state.invariants_R = invariants
         elif name == "platform":
             state.platform_path = rc.path
             state.platform_local_hash = local_h
             state.platform_git_hash = git_h
+            state.platform_head_sha = head_sha
             state.invariants_P = invariants
+
+    # --- F12: poll deployed apps' /__manifest -----------------------------
+    if servers:
+        for sname, sc in servers.items():
+            if not sc.token_file.is_file():
+                continue
+            token = sc.token_file.read_text(encoding="utf-8").strip()
+            try:
+                body = manifest.compute_server_manifest(
+                    sc.url, token, manifest_path=sc.manifest_path
+                )
+            except manifest.ServerManifestError:
+                continue
+            commit_sha = body.get("commit_sha")
+            mh = body.get("manifest_root_hash")
+            if sc.repo == "reflexivity":
+                state.reflexivity_server_hash = mh
+                state.reflexivity_server_commit_sha = commit_sha
+                meta.setdefault("reflexivity", {})
+                meta["reflexivity"]["server"] = mh
+                meta["reflexivity"]["server_commit_sha"] = commit_sha
+                meta["reflexivity"]["server_url"] = sc.url
+                # Recompute trinity now that we have all three legs.
+                if mh and meta["reflexivity"].get("local") and meta["reflexivity"].get("git"):
+                    meta["reflexivity"]["trinity"] = fp.trinity_fingerprint(
+                        meta["reflexivity"]["local"],
+                        meta["reflexivity"]["git"],
+                        mh,
+                    )
+            elif sc.repo == "platform":
+                state.platform_server_hash = mh
+                state.platform_server_commit_sha = commit_sha
+                meta.setdefault("platform", {})
+                meta["platform"]["server"] = mh
+                meta["platform"]["server_commit_sha"] = commit_sha
+                meta["platform"]["server_url"] = sc.url
+                if mh and meta["platform"].get("local") and meta["platform"].get("git"):
+                    meta["platform"]["trinity"] = fp.trinity_fingerprint(
+                        meta["platform"]["local"],
+                        meta["platform"]["git"],
+                        mh,
+                    )
+
     return state, meta
 
 
@@ -151,7 +204,8 @@ def status(explain: bool) -> None:
         raise SystemExit(2)
 
     registry = Registry.load(registry_path)
-    state, meta = _build_state(repos)
+    servers = config.load_servers()
+    state, meta = _build_state(repos, servers)
     report = registry.audit(state)
 
     # --- compose render --------------------------------------------------

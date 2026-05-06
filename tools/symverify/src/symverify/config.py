@@ -56,6 +56,18 @@ class RepoConfig:
     owner_type: str = "user"
 
 
+@dataclass(frozen=True, slots=True)
+class ServerConfig:
+    """One deployed app's /__manifest endpoint."""
+
+    name: str
+    url: str
+    manifest_path: str
+    token_file: Path
+    repo: str
+    app: str
+
+
 def load_repos() -> dict[str, RepoConfig]:
     """Parse repos.toml. Empty dict if the file is missing."""
     p = config_dir() / "repos.toml"
@@ -72,3 +84,29 @@ def load_repos() -> dict[str, RepoConfig]:
         )
         for name, spec in repos.items()
     }
+
+
+def load_servers() -> dict[str, ServerConfig]:
+    """Parse servers.toml. Empty dict if the file is missing."""
+    p = config_dir() / "servers.toml"
+    if not p.is_file():
+        return {}
+    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    servers = data.get("servers", {})
+    out: dict[str, ServerConfig] = {}
+    for name, spec in servers.items():
+        token_file_str = spec.get("token_file", "").strip()
+        token_file = (
+            Path(token_file_str.replace("~", str(Path.home())))
+            if token_file_str
+            else Path()
+        )
+        out[name] = ServerConfig(
+            name=name,
+            url=spec["url"].rstrip("/"),
+            manifest_path=spec.get("manifest_path", "/__manifest"),
+            token_file=token_file,
+            repo=spec.get("repo", ""),
+            app=spec.get("app", name),
+        )
+    return out
