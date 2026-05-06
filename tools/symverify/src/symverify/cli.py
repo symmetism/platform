@@ -660,6 +660,98 @@ def fold_cmd(verify: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# `sym timeline` (I1)
+# ---------------------------------------------------------------------------
+
+
+@main.command("timeline")
+@click.option(
+    "--days", default=30, type=int, show_default=True,
+    help="How many days of history to render."
+)
+@click.option(
+    "--limit", default=200, type=int, show_default=True,
+    help="Max snapshots to read from the DB."
+)
+def timeline_cmd(days: int, limit: int) -> None:
+    """Vertical strip of recent coherence states grouped by day.
+
+    One row per day; glyph counts: ✓ conserved, ⚠ drift, ✗ lockdown.
+    """
+    from collections import defaultdict
+    from datetime import datetime, timedelta, timezone
+
+    console = Console()
+    try:
+        with db.connect() as conn:
+            snapshots = db.list_snapshots(conn, limit=limit)
+    except Exception as e:
+        console.print(f"[{render.ALARM}]database read failed: {e}[/]")
+        raise SystemExit(2)
+
+    if not snapshots:
+        console.print(f"[{render.MUTED}]no snapshots yet — run `sym status` to record one[/]")
+        return
+
+    # Group by date.
+    by_day: dict[str, list[dict]] = defaultdict(list)
+    for s in snapshots:
+        day = s["taken_at"][:10]  # YYYY-MM-DD
+        by_day[day].append(s)
+
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).strftime("%Y-%m-%d")
+    by_day = {d: ss for d, ss in by_day.items() if d >= cutoff}
+
+    if not by_day:
+        console.print(
+            f"[{render.MUTED}]no snapshots in the last {days} days[/]"
+        )
+        return
+
+    # Render: newest day first.
+    console.print(
+        f"[bold {render.STABLE}]Coherence timeline[/]  "
+        f"[{render.MUTED}]({days}d, {sum(len(ss) for ss in by_day.values())} audits "
+        f"across {len(by_day)} days)[/]"
+    )
+    console.print()
+
+    for day in sorted(by_day.keys(), reverse=True):
+        ss = by_day[day]
+        clean = sum(1 for s in ss if s["status"] == "clean")
+        drift = sum(1 for s in ss if s["status"] == "drift")
+        lock = sum(1 for s in ss if s["status"] == "lockdown")
+        n = len(ss)
+
+        # Glyph strip: one mark per snapshot, in chronological order
+        # (oldest first within the day).
+        strip = ""
+        for s in reversed(ss):
+            if s["status"] == "lockdown":
+                strip += f"[{render.ALARM}]✗[/]"
+            elif s["status"] == "drift":
+                strip += f"[{render.DRIFT}]⚠[/]"
+            else:
+                strip += f"[{render.STABLE}]✓[/]"
+
+        summary = []
+        if clean:
+            summary.append(f"[{render.STABLE}]{clean} ✓[/]")
+        if drift:
+            summary.append(f"[{render.DRIFT}]{drift} ⚠[/]")
+        if lock:
+            summary.append(f"[{render.ALARM}]{lock} ✗[/]")
+        sumstr = "  ".join(summary)
+
+        console.print(
+            f"  [{render.MUTED}]{day}[/]  {strip:60s}  "
+            f"[{render.MUTED}]{n} audit{'s' if n != 1 else ''}[/]  {sumstr}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # `sym log` (E4)
 # ---------------------------------------------------------------------------
 

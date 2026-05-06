@@ -152,9 +152,53 @@ body {
 .verify-result.ok    { color: var(--verified); }
 .verify-result.fail  { color: var(--alarm); }
 
+/* ---- Timeline spark (I3) ---- */
+.timeline {
+  margin: 3rem 0 1.4rem;
+  border-top: 1px solid var(--hairline);
+  padding-top: 1.4rem;
+}
+.timeline-label {
+  font-size: 0.85rem;
+  margin-bottom: 0.55rem;
+}
+.timeline-spark {
+  width: 100%;
+  height: 36px;
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: 0.2rem;
+}
+.timeline-spark .day {
+  flex: 1 0 auto;
+  min-width: 6px;
+  display: flex;
+  align-items: flex-end;
+  position: relative;
+}
+.timeline-spark .day-bar {
+  width: 100%;
+  border-radius: 1px 1px 0 0;
+  transition: opacity 0.2s ease;
+}
+.timeline-spark .day-bar.empty   { background: transparent; }
+.timeline-spark .day-bar.clean   { background: var(--stable); opacity: 0.4; }
+.timeline-spark .day-bar.drift   { background: var(--drift); }
+.timeline-spark .day-bar.alarm   { background: var(--alarm); }
+.timeline-spark .day:hover .day-bar { opacity: 1; }
+.timeline-summary {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  display: flex;
+  justify-content: space-between;
+}
+
 /* ---- Footer ---- */
 .page-footer {
-  margin-top: 4rem;
+  margin-top: 3rem;
   padding-top: 1.2rem;
   border-top: 1px solid var(--hairline);
   text-align: center;
@@ -186,10 +230,26 @@ body {
 /* ---- Trinity ring points ---- */
 #ring-points circle { transition: cx 0.5s ease, cy 0.5s ease, fill 0.3s ease; }
 
-/* ---- Print ---- */
+/* ---- Mobile (I4) ---- */
+@media (max-width: 600px) {
+  .page { padding: 3rem 1rem 2rem; }
+  .equation { font-size: 1.85rem; }
+  .equation .quant { display: block; margin-top: 0.4rem; }
+  .fold { font-size: 1.2rem; letter-spacing: 0.02em; word-break: break-all; }
+  .trinity-rings { width: 160px; height: 160px; }
+  .bracket-row { flex-direction: column; padding: 0.5rem 0; }
+  .bracket-row .qid { font-size: 0.85rem; }
+  .bracket-row .status { font-size: 0.85rem; }
+  .timeline-summary { font-size: 0.7rem; }
+}
+
+/* ---- Print (I4 keeps original) ---- */
 @media print {
   body { background: white; color: black; }
   .verify-btn, .noscript { display: none; }
   .equation .brace { color: black; }
   .fold { color: black; }
+  .timeline-spark .day-bar.clean { background: #888 !important; opacity: 0.6 !important; }
+  .timeline-spark .day-bar.drift { background: #444 !important; }
+  .timeline-spark .day-bar.alarm { background: #000 !important; }
 }

@@ -152,6 +152,89 @@ async function loadLatestAttestation() {
   }
 }
 
+async function loadTimeline() {
+  try {
+    const r = await fetch("/api/timeline.json", { cache: "no-store" });
+    if (!r.ok) return [];
+    return await r.json();
+  } catch {
+    return [];
+  }
+}
+
+function renderTimelineSpark(attestations) {
+  const root = $("#timeline-spark");
+  const summary = $("#timeline-summary");
+  if (!root) return;
+  root.innerHTML = "";
+
+  // Group by day; track worst status + count.
+  const byDay = new Map();
+  for (const a of attestations) {
+    const ts = a.verified_at || a.received_at || "";
+    const day = ts.slice(0, 10);
+    if (!day) continue;
+    const slot =
+      byDay.get(day) || { count: 0, alarm: false, drift: false };
+    slot.count += 1;
+    if (a.alarm) slot.alarm = true;
+    if (a.drift) slot.drift = true;
+    byDay.set(day, slot);
+  }
+
+  // Last 30 days, oldest first (left-to-right).
+  const days = [];
+  const today = new Date();
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today);
+    d.setUTCDate(d.getUTCDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    days.push({ day: key, slot: byDay.get(key) });
+  }
+
+  let nClean = 0, nDrift = 0, nAlarm = 0, nNone = 0;
+  for (const { day, slot } of days) {
+    const wrap = document.createElement("div");
+    wrap.className = "day";
+    wrap.title = slot
+      ? `${day}: ${slot.count} attestation${slot.count > 1 ? "s" : ""}` +
+        (slot.alarm ? " · alarm" : slot.drift ? " · drift" : " · clean")
+      : `${day}: no data`;
+    const bar = document.createElement("div");
+    bar.className = "day-bar";
+    if (!slot) {
+      bar.classList.add("empty");
+      bar.style.height = "10%";
+      nNone += 1;
+    } else if (slot.alarm) {
+      bar.classList.add("alarm");
+      bar.style.height = "100%";
+      nAlarm += 1;
+    } else if (slot.drift) {
+      bar.classList.add("drift");
+      bar.style.height = "60%";
+      nDrift += 1;
+    } else {
+      bar.classList.add("clean");
+      bar.style.height = "30%";
+      nClean += 1;
+    }
+    wrap.appendChild(bar);
+    root.appendChild(wrap);
+  }
+  if (summary) {
+    summary.innerHTML =
+      `<span>${attestations.length} attestation${
+        attestations.length === 1 ? "" : "s"
+      } · 30d</span>` +
+      `<span>` +
+      `<span style="color:#7eb6d9">${nClean} clean</span> · ` +
+      `<span style="color:#e0a458">${nDrift} drift</span> · ` +
+      `<span style="color:#cc4444">${nAlarm} alarm</span>` +
+      `</span>`;
+  }
+}
+
 async function init() {
   const att = await loadLatestAttestation();
   if (att) {
@@ -174,6 +257,9 @@ async function init() {
     $("#timestamp").textContent = "no published attestation yet";
     placeRingPoints("drift");
   }
+  // I3: footer timeline spark.
+  const timeline = await loadTimeline();
+  renderTimelineSpark(timeline);
 }
 
 async function runVerify() {

@@ -249,6 +249,42 @@ def list_narratives(
     ]
 
 
+def list_snapshots(
+    conn: sqlite3.Connection,
+    *,
+    since: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """List snapshots newest-first, optionally filtered by `since` (ISO-8601 UTC)."""
+    if since:
+        cur = conn.execute(
+            "SELECT id, taken_at, trinity_r, trinity_p, system_fold, "
+            "brackets_json, status FROM snapshots "
+            "WHERE taken_at >= ? "
+            "ORDER BY taken_at DESC LIMIT ?",
+            (since, limit),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT id, taken_at, trinity_r, trinity_p, system_fold, "
+            "brackets_json, status FROM snapshots "
+            "ORDER BY taken_at DESC LIMIT ?",
+            (limit,),
+        )
+    return [
+        {
+            "id": r[0],
+            "taken_at": r[1],
+            "trinity_r": r[2],
+            "trinity_p": r[3],
+            "system_fold": r[4],
+            "brackets": json.loads(r[5]),
+            "status": r[6],
+        }
+        for r in cur.fetchall()
+    ]
+
+
 def latest_snapshot(conn: sqlite3.Connection) -> dict | None:
     cur = conn.execute(
         "SELECT id, taken_at, trinity_r, trinity_p, system_fold, "
