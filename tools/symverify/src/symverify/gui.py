@@ -387,6 +387,25 @@ class PlatonicCycle(tk.Canvas):
         )
         self._tick = 0
         self._shape_idx = 0
+
+        # Pre-allocate one rectangle per pixel cell. We toggle fills on
+        # each frame instead of deleting/recreating — this is what kills
+        # the visible flicker. Tk's Canvas can briefly paint the cleared
+        # state between delete("all") and the new create_rectangle calls
+        # on slower machines / under load; itemconfig is atomic per item.
+        self._rects: list[list[int]] = [
+            [0] * grid for _ in range(grid)
+        ]
+        for py in range(grid):
+            for px in range(grid):
+                rid = self.create_rectangle(
+                    px * pixel_scale, py * pixel_scale,
+                    (px + 1) * pixel_scale, (py + 1) * pixel_scale,
+                    fill="", outline="",
+                )
+                self._rects[py][px] = rid
+
+        self._active: set[tuple[int, int]] = set()
         self._draw()
         self.after(self.FRAME_MS, self._loop)
 
@@ -416,11 +435,13 @@ class PlatonicCycle(tk.Canvas):
         return x2, y2
 
     def _draw(self) -> None:
-        self.delete("all")
-        name, fn = self.SHAPES[self._shape_idx][0], self.SHAPES[self._shape_idx][1]
+        _, fn = self.SHAPES[self._shape_idx]
         verts3, edges = fn()
 
-        theta = (self._tick % 360) * (math.pi / 90.0)  # slow steady spin
+        # Continuous rotation — never wrapped via modulo, since the
+        # wraparound (tick=359 → tick=0) would produce a small visible
+        # discontinuity. cos/sin handle large theta values fine.
+        theta = self._tick * (math.pi / 90.0)
 
         # Project all verts; find bounds for scaling.
         projected = [self._project(v, theta) for v in verts3]
@@ -436,8 +457,7 @@ class PlatonicCycle(tk.Canvas):
         pts = [(cx + px * scale, cy + py * scale) for px, py in projected]
 
         # Rasterize each edge by stepping integer points along it.
-        # Pixel set ensures we don't draw the same square twice.
-        pixels: set[tuple[int, int]] = set()
+        new_active: set[tuple[int, int]] = set()
         for a, b in edges:
             x1, y1 = pts[a]
             x2, y2 = pts[b]
@@ -447,15 +467,17 @@ class PlatonicCycle(tk.Canvas):
                 px = int(round(x1 + (x2 - x1) * t))
                 py = int(round(y1 + (y2 - y1) * t))
                 if 0 <= px < self.grid_dim and 0 <= py < self.grid_dim:
-                    pixels.add((px, py))
+                    new_active.add((px, py))
 
-        # Paint pixels.
-        ps = self.pixel_size
-        for (px, py) in pixels:
-            self.create_rectangle(
-                px * ps, py * ps, (px + 1) * ps, (py + 1) * ps,
-                fill=self.EDGE_COLOR, outline="",
-            )
+        # Diff against last frame: only itemconfig the cells that
+        # actually changed. Cuts Tk traffic ~10× and prevents flicker.
+        to_light = new_active - self._active
+        to_clear = self._active - new_active
+        for px, py in to_light:
+            self.itemconfig(self._rects[py][px], fill=self.EDGE_COLOR)
+        for px, py in to_clear:
+            self.itemconfig(self._rects[py][px], fill="")
+        self._active = new_active
 
 
 # ---------------------------------------------------------------------------
@@ -616,13 +638,22 @@ class SymGUI(ctk.CTk):
 
         narr_header = ctk.CTkFrame(narrative, fg_color=COLOR_PANEL)
         narr_header.grid(row=0, column=0, padx=12, pady=(8, 0), sticky="ew")
-        narr_header.grid_columnconfigure(0, weight=1)
+        narr_header.grid_columnconfigure(1, weight=1)
+
+        # Platonic-solids cycle — TOP-LEFT of the narrative panel,
+        # same panel-color background so it blends. Cycles tetra →
+        # cube → octa → dodeca → icosa, slow spin per shape, purely
+        # decorative (information lives in rings + brackets).
+        self.solids = PlatonicCycle(
+            narr_header, pixel_scale=2, grid=24, bg=COLOR_PANEL,
+        )
+        self.solids.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         ctk.CTkLabel(
             narr_header, text="Narrative",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=COLOR_MUTED, anchor="w",
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=1, sticky="w")
 
         self.btn_copy_narrative = ctk.CTkButton(
             narr_header, text="Copy", width=64, height=24,
@@ -630,17 +661,7 @@ class SymGUI(ctk.CTk):
             fg_color=COLOR_MUTED, hover_color="#7B8593",
             command=self._action_copy_narrative,
         )
-        self.btn_copy_narrative.grid(row=0, column=1, sticky="e", padx=(0, 8))
-
-        # Platonic-solids cycle — top-right corner of the narrative
-        # panel, same panel-color background so it blends in. Smaller
-        # pixel scale than the standalone version (it lives in a header
-        # bar, not a corner). Cycles tetra → cube → octa → dodeca →
-        # icosa, slow spin per shape, purely decorative.
-        self.solids = PlatonicCycle(
-            narr_header, pixel_scale=2, grid=24, bg=COLOR_PANEL,
-        )
-        self.solids.grid(row=0, column=2, sticky="e")
+        self.btn_copy_narrative.grid(row=0, column=2, sticky="e")
 
         self.text_narrative = ctk.CTkTextbox(
             narrative,
