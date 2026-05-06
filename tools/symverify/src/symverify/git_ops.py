@@ -9,7 +9,15 @@ to reimplement .gitignore semantics.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+
+# Windows: pythonw.exe has no console, but subprocess.run for git.exe
+# without an explicit creation flag still tries to allocate a console
+# window for the child. The result is git hangs indefinitely waiting
+# for a console handle. CREATE_NO_WINDOW (0x08000000) tells Windows
+# not to allocate a console, fixing daemon hangs under pythonw.
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 class GitError(RuntimeError):
@@ -21,8 +29,16 @@ def run_git(repo_path: str | Path, *args: str, **kwargs) -> str:
 
     Raises GitError on non-zero exit. `kwargs` is forwarded to subprocess.run
     (e.g. `input=` for stdin); we always set check=False to inspect stderr.
+
+    `stdin=DEVNULL` is set unless the caller passed `input=` — this
+    prevents git from inheriting pythonw's broken stdin handle and
+    hanging when invoked from the daemon's Scheduled Task (no console).
     """
     cmd = ["git", "-C", str(repo_path), *args]
+    if "input" not in kwargs and "stdin" not in kwargs:
+        kwargs["stdin"] = subprocess.DEVNULL
+    if "creationflags" not in kwargs:
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
     proc = subprocess.run(
         cmd, capture_output=True, text=False, check=False, **kwargs
     )
@@ -37,7 +53,13 @@ def run_git(repo_path: str | Path, *args: str, **kwargs) -> str:
 def run_git_bytes(repo_path: str | Path, *args: str) -> bytes:
     """Run git and return raw stdout bytes (for blob content)."""
     cmd = ["git", "-C", str(repo_path), *args]
-    proc = subprocess.run(cmd, capture_output=True, check=False)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
+        creationflags=_CREATE_NO_WINDOW,
+    )
     if proc.returncode != 0:
         raise GitError(
             f"{' '.join(cmd)} -> exit {proc.returncode}\n"

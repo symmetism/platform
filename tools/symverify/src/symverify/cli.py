@@ -347,20 +347,62 @@ def init() -> None:
 @main.command("daemon")
 @click.option("--log-level", default="INFO", show_default=True,
               help="logging.{DEBUG,INFO,WARNING,ERROR}")
-def daemon_cmd(log_level: str) -> None:
+@click.option("--log-file", default=None,
+              help="Path to log file. Defaults to ~/.symmetism/state/daemon.log "
+                   "when stdout is unattached (pythonw.exe), else stdout.")
+def daemon_cmd(log_level: str, log_file: str | None) -> None:
     """Run the SymVerify daemon (filesystem + wake + hourly triggers).
 
-    Logs to stdout. For background operation on Windows, install via
-    `sym install-service` which schedules a logon-task using pythonw.exe
-    so no console window flashes.
+    On Windows the Scheduled Task launches us via pythonw.exe (no
+    console). pythonw's sys.stdout / sys.stderr are None — Python's
+    logging StreamHandler then fails on first write and the worker
+    thread silently dies. Detect that and route logging to a rotating
+    file under ~/.symmetism/state/daemon.log instead.
     """
     import logging as _logging
+    import logging.handlers as _logh
+    import sys as _sys
+    from pathlib import Path as _Path
+    from symverify import config as _config
     from symverify import daemon as _daemon
 
-    _logging.basicConfig(
-        level=getattr(_logging, log_level.upper(), _logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    level = getattr(_logging, log_level.upper(), _logging.INFO)
+    fmt = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root = _logging.getLogger()
+    root.setLevel(level)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    is_pythonw = _sys.executable.lower().endswith("pythonw.exe")
+    needs_file = log_file is not None or _sys.stdout is None or is_pythonw
+
+    if needs_file:
+        if log_file is None:
+            log_file = str(_config.state_dir() / "daemon.log")
+        path = _Path(log_file).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Reroute sys.stdout/stderr to the log file too, so any
+        # stray print() or unhandled-exception traceback also lands
+        # in the file (rather than crashing on a None stdout under
+        # pythonw, which silently kills threads).
+        try:
+            stream = open(path, "a", encoding="utf-8", buffering=1)
+            _sys.stdout = stream
+            _sys.stderr = stream
+        except Exception:
+            pass
+
+        fh = _logh.RotatingFileHandler(
+            path, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+        )
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    else:
+        sh = _logging.StreamHandler(_sys.stdout)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
     d = _daemon.Daemon()
     d.run()
 

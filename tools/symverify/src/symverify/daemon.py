@@ -93,10 +93,14 @@ class TriggerEvent:
 def run_audit_cycle(event: TriggerEvent) -> dict:
     """Run a complete audit cycle. Returns the status dict that was
     written to status.json. Safe to call from worker thread."""
+    log.info("audit cycle starting (kind=%s)", event.kind)
     repos = config.load_repos()
     servers = config.load_servers()
+    log.info("loaded %d repo(s), %d server(s)", len(repos), len(servers or {}))
 
+    log.info("building state (manifests, server polls)...")
     state, meta = state_collect.build_state(repos, servers)
+    log.info("state built; meta keys: %s", list(meta.keys()))
 
     cmd_dir = config.command_dir()
     registry_path = cmd_dir / "STABILIZER_REGISTRY.json"
@@ -136,7 +140,9 @@ def run_audit_cycle(event: TriggerEvent) -> dict:
         "version": __version__,
     }
 
+    log.info("audit cycle: %s fold=%s — writing status.json", overall, fold)
     atomic_write_json(status_path(), status_payload)
+    log.info("audit cycle: status.json written")
 
     # Persist snapshot + event to SQLite.
     try:
@@ -212,7 +218,7 @@ class TriggerWorker:
             except queue.Empty:
                 pass
             if extras:
-                log.debug("worker drained %d extra events for %s", extras, ev.kind)
+                log.info("worker drained %d extra events for %s", extras, ev.kind)
             try:
                 self.last_status = self.audit_fn(ev)
             except Exception as e:
@@ -358,7 +364,7 @@ class _DebouncedFsHandler:
                 self._timer.daemon = True
                 self._timer.start()
         except Exception as e:
-            log.debug("fs handler error: %s", e)
+            log.info("fs handler error: %s", e)
 
     def _fire(self) -> None:
         with self._lock:

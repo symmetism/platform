@@ -44,6 +44,9 @@ def build_state(
     display. Wraps every probe in try/except so a transient network
     failure doesn't bring the daemon down.
     """
+    import logging as _logging
+    _log = _logging.getLogger("symverify.state_collect")
+
     state = State(symverify_version=__version__)
     meta: dict[str, dict] = {}
 
@@ -52,10 +55,14 @@ def build_state(
             meta[name] = {"error": f"path missing: {rc.path}"}
             continue
         try:
+            _log.info("[%s] computing local manifest at %s", name, rc.path)
             local_m = manifest.compute_local_manifest(rc.path)
+            _log.info("[%s] computing git manifest", name)
             git_m = manifest.compute_git_manifest(rc.path)
+            _log.info("[%s] resolving head sha", name)
             head_sha = git_ops.git_head_sha(rc.path)
         except Exception as e:
+            _log.warning("[%s] manifest computation failed: %s", name, e)
             meta[name] = {"error": str(e)}
             continue
         local_h = local_m.root_hash()
