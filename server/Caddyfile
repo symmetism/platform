@@ -52,10 +52,9 @@ reflexivity.symmetism.com {
 }
 
 # Attestation service: serves the public /verify page, fingerprint
-# badges, and the publish endpoint at the apex symmetism.com.
-# (verify.symmetism.com would also work if a DNS record is added; not
-# active for now to avoid LE retry spam from NXDOMAIN.)
-symmetism.com {
+# badges, and the publish endpoint. Both apex and verify subdomain
+# point at the same backend (DNS-only / gray cloud at Cloudflare).
+symmetism.com, verify.symmetism.com {
     encode gzip zstd
 
     log {
