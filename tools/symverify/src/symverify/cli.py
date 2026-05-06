@@ -453,6 +453,131 @@ def init() -> None:
 
 
 # ---------------------------------------------------------------------------
+# `sym attest` (H4)
+# ---------------------------------------------------------------------------
+
+
+@main.command("attest")
+@click.option(
+    "--service-url",
+    default="https://symmetism.com",
+    show_default=True,
+    help="Base URL of the attestation service.",
+)
+@click.option(
+    "--token-file",
+    default=None,
+    help="Path to the publish token (default: ~/.symmetism/secrets/attestation.publish.token).",
+)
+def attest_cmd(service_url: str, token_file: str | None) -> None:
+    """Compute the current snapshot and POST it to the attestation
+    service for publication to the public Gist (battle plan H4).
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from symverify.canonical import LockdownError  # noqa: F401  (just to import the error class)
+
+    import httpx
+
+    repos = config.load_repos()
+    if not repos:
+        click.echo("no repos configured", err=True)
+        raise SystemExit(2)
+    servers = config.load_servers()
+    state, meta = _build_state(repos, servers)
+
+    cmd_dir = config.command_dir()
+    registry_path = cmd_dir / "STABILIZER_REGISTRY.json"
+    if not registry_path.is_file():
+        click.echo(f"no registry at {registry_path}", err=True)
+        raise SystemExit(2)
+    registry = Registry.load(registry_path)
+    report = registry.audit(state)
+
+    if report.alarm:
+        click.echo(
+            "[ALARM] aborting attestation publish — operator must clear lockdown",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Compose the attestation payload.
+    trinities = {
+        name: m.get("trinity", "")
+        for name, m in meta.items()
+        if m.get("trinity")
+    }
+    invariants: dict[str, str] = {}
+    for inv in (state.invariants_R, state.invariants_P):
+        for k, v in inv.items():
+            invariants.setdefault(k, v)
+    folded = (
+        fp.system_fold(trinities, invariants, __version__)
+        if trinities
+        else None
+    )
+
+    attestation = {
+        "spec": "symverify-fingerprint/1",
+        "system_fold": folded,
+        "trinities": trinities,
+        "invariants": invariants,
+        "version": __version__,
+        "verified_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "alarm": report.alarm,
+        "drift": any(b.status not in (STATUS_CONSERVED, STATUS_PENDING) for b in report.brackets),
+        "brackets": {b.charge_id: b.to_json() for b in report.brackets},
+        "repos": {
+            name: {
+                "commit_sha": m.get("short_sha"),
+                "trinity": m.get("trinity"),
+                "server_commit_sha": m.get("server_commit_sha"),
+                "server_url": m.get("server_url"),
+            }
+            for name, m in meta.items()
+            if not m.get("error")
+        },
+    }
+
+    # Resolve token.
+    if token_file:
+        tok_path = Path(token_file).expanduser()
+    else:
+        tok_path = config.secrets_dir() / "attestation.publish.token"
+    if not tok_path.is_file():
+        click.echo(
+            f"[error] no publish token at {tok_path}\n"
+            "  generate one (32-byte hex): openssl rand -hex 32 > "
+            f"{tok_path}\n"
+            "  then set ATTESTATION_PUBLISH_TOKEN to the same value on the deployed service.",
+            err=True,
+        )
+        raise SystemExit(2)
+    token = tok_path.read_text(encoding="utf-8").strip()
+
+    url = f"{service_url.rstrip('/')}/api/publish"
+    try:
+        resp = httpx.post(
+            url,
+            headers={"X-Attestation-Token": token},
+            json=attestation,
+            timeout=15.0,
+        )
+    except httpx.HTTPError as e:
+        click.echo(f"[error] connection failed to {url}: {e}", err=True)
+        raise SystemExit(1)
+    if resp.status_code != 200:
+        click.echo(
+            f"[error] {resp.status_code} from {url}: {resp.text[:200]}",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    click.echo(f"published: {folded} at {attestation['verified_at']}")
+
+
+# ---------------------------------------------------------------------------
 # `sym fold` (G1 / G2)
 # ---------------------------------------------------------------------------
 
