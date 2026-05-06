@@ -39,7 +39,12 @@ def fetch_attestations(
     resp = httpx.get(f"{GIST_API}/{gist_id}", headers=headers, timeout=timeout)
     if resp.status_code != 200:
         raise PublisherError(f"GET gist failed: {resp.status_code} {resp.text[:200]}")
-    files = resp.json().get("files", {})
+    # Force UTF-8 decode of the response body. JSON over HTTP must be UTF-8
+    # per RFC 8259 §8.1, but httpx falls back to ISO-8859-1 when the
+    # Content-Type header has no explicit charset (which GitHub's gist API
+    # sometimes does). Decoding raw bytes via json.loads is unambiguous.
+    payload = json.loads(resp.content)
+    files = payload.get("files", {})
     if filename not in files:
         return []
     raw = files[filename].get("content", "[]") or "[]"

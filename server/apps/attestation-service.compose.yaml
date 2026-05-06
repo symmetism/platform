@@ -1,0 +1,33 @@
+# Per-app compose: attestation-service.
+#
+# Image is pulled from GHCR by Watchtower. Operator places the env
+# file at /etc/symmetism/attestation-service.env on the VPS containing:
+#   ATTESTATION_GIST_ID=<32-hex public Gist ID>
+#   ATTESTATION_GIST_TOKEN=<gist-scoped PAT>     (mode 0600)
+#   ATTESTATION_PUBLISH_TOKEN=<32-byte hex>      (matches operator-side
+#                                                 attestation.publish.token)
+#   SYMVERIFY_TOKEN=<32-byte hex>                (matches operator-side
+#                                                 symverify.attestation-service.token)
+#   ATTESTATION_GIST_FILENAME=symmetism-attestations.json
+#
+# Watchtower polls/upgrades this container via the enable label.
+
+services:
+  attestation-service:
+    image: ghcr.io/symmetism/attestation-service:latest
+    container_name: attestation-service
+    restart: unless-stopped
+    pull_policy: always
+    networks:
+      - symmetism
+    env_file:
+      - /etc/symmetism/attestation-service.env
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "org.symmetism.app=attestation-service"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

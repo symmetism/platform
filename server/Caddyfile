@@ -50,3 +50,25 @@ reflexivity.symmetism.com {
         }
     }
 }
+
+# Attestation service: serves the public /verify page, fingerprint
+# badges, and the publish endpoint at the apex symmetism.com.
+# (verify.symmetism.com would also work if a DNS record is added; not
+# active for now to avoid LE retry spam from NXDOMAIN.)
+symmetism.com {
+    encode gzip zstd
+
+    log {
+        output file /var/log/caddy/attestation.access.log {
+            roll_size 20mb
+            roll_keep 5
+        }
+    }
+
+    reverse_proxy attestation-service:8000 {
+        transport http {
+            read_timeout 60s
+            dial_timeout 5s
+        }
+    }
+}

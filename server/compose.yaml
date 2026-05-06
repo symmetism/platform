@@ -69,3 +69,4 @@ volumes:
 
 include:
   - apps/reflexivity-webapp.compose.yaml
+  - apps/attestation-service.compose.yaml
