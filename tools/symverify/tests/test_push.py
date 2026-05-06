@@ -50,7 +50,10 @@ def test_secret_scan_blocks_on_aws_key(tmp_path: Path):
 
 
 def test_secret_scan_blocks_on_private_key(tmp_path: Path):
-    leaked = "-----BEGIN RSA PRIVATE KEY-----\nblah"
+    # Split the literal so this file itself doesn't match the same
+    # regex Q_secrets scans the repo with — otherwise the suite passing
+    # would put the live system into lockdown.
+    leaked = "-----" + "BEGIN" + " RSA " + "PRIVATE" + " KEY" + "-----\nblah"
     with patch.object(push, "_run", return_value=_fake_run(stdout=leaked)):
         r = push.scan_diff_for_secrets(tmp_path, scope=None)
     assert r.ok is False
