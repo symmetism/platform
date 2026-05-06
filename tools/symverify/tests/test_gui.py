@@ -103,3 +103,53 @@ def test_load_status_round_trip(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(gui, "status_path", lambda: p)
     got = gui.load_status()
     assert got == payload
+
+
+# ---------------------------------------------------------------------------
+# coherence_state — same logic as the public verify page's placeRingPoints.
+# ---------------------------------------------------------------------------
+
+
+def test_coherence_state_none_is_drift():
+    assert gui.coherence_state(None) == "drift"
+
+
+def test_coherence_state_alarm_field_wins():
+    assert gui.coherence_state({"alarm": True, "status": "clean"}) == "alarm"
+
+
+def test_coherence_state_lockdown_is_alarm():
+    assert gui.coherence_state({"alarm": False, "status": "lockdown"}) == "alarm"
+
+
+def test_coherence_state_drift():
+    assert gui.coherence_state({"alarm": False, "status": "drift"}) == "drift"
+
+
+def test_coherence_state_clean_is_aligned():
+    assert gui.coherence_state({"alarm": False, "status": "clean"}) == "aligned"
+
+
+def test_coherence_state_unknown_status_is_drift():
+    assert gui.coherence_state({"alarm": False, "status": "weird"}) == "drift"
+
+
+# ---------------------------------------------------------------------------
+# TrinityRings position table — must match verify.js exactly.
+# ---------------------------------------------------------------------------
+
+
+def test_trinity_rings_position_table_matches_verify_page():
+    """If these positions drift from the verify page, the in-app and
+    in-browser indicators will tell different stories."""
+    assert gui.TrinityRings.DOT_POSITIONS["aligned"] == [(0, 0), (0, 0), (0, 0)]
+    assert gui.TrinityRings.DOT_POSITIONS["drift"] == [(-12, 0), (12, 0), (0, 0)]
+    assert gui.TrinityRings.DOT_POSITIONS["alarm"] == [
+        (-50, 30), (50, 30), (0, -55),
+    ]
+
+
+def test_trinity_rings_color_table_matches_verify_page():
+    assert gui.TrinityRings.DOT_FILL["aligned"] == "#7eb6d9"
+    assert gui.TrinityRings.DOT_FILL["drift"] == "#e0a458"
+    assert gui.TrinityRings.DOT_FILL["alarm"] == "#cc4444"

@@ -5,6 +5,16 @@ Reads `~/.symmetism/state/status.json` (written by the daemon) every
 Buttons trigger a manual audit, narrative explanation, the verify
 page, the daemon log, and a small Settings popup.
 
+Three custom widgets render the visual state:
+  - TrinityRings: 3 concentric circles + 3 colored dots whose
+    positions encode aligned/drift/alarm — same iconography as the
+    public verify page (apps/attestation-service/static/verify.js).
+  - Mascot: pixel-art character built from platonic-solid shapes
+    (octahedron head, cube body, tetrahedron feet). Idle-bobs and
+    reacts to status transitions and button clicks.
+  - The narrative panel (now taller) ships with a one-click copy
+    button.
+
 Why this design:
   - The daemon is the source of truth; the GUI only renders what's
     on disk. No duplicate audit pipeline. Refresh = re-read JSON.
@@ -17,10 +27,12 @@ Why this design:
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
 import threading
+import tkinter as tk
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +118,29 @@ def load_recent_narratives(limit: int = 5) -> list[dict[str, Any]]:
         return []
 
 
+def coherence_state(status: dict[str, Any] | None) -> str:
+    """Map a status payload to the same 3-state coherence label the
+    public verify page uses: 'aligned' | 'drift' | 'alarm'.
+
+    Logic mirrors verify.js:
+      - alarm field true → 'alarm'
+      - any drift (status == 'drift' or 'lockdown') → 'drift' / 'alarm'
+      - everything conserved → 'aligned'
+    """
+    if status is None:
+        return "drift"  # daemon not running; render conservatively
+    if status.get("alarm"):
+        return "alarm"
+    overall = status.get("status", "drift")
+    if overall == "lockdown":
+        return "alarm"
+    if overall == "drift":
+        return "drift"
+    if overall == "clean":
+        return "aligned"
+    return "drift"
+
+
 def humanize_age(iso_ts: str) -> str:
     """'2026-05-06T18:35:56Z' -> '12s ago' / '3m ago' / '2h ago'."""
     try:
@@ -125,6 +160,271 @@ def humanize_age(iso_ts: str) -> str:
     if s < 86400:
         return f"{s // 3600}h ago"
     return f"{s // 86400}d ago"
+
+
+# ---------------------------------------------------------------------------
+# Trinity rings — same visual language as the public verify page.
+# ---------------------------------------------------------------------------
+
+
+class TrinityRings(tk.Canvas):
+    """Three concentric circles with three colored dots whose positions
+    encode coherence state.
+
+    Mirrors verify.js placeRingPoints() exactly so the in-app and
+    in-browser indicators tell the same story:
+      aligned: all 3 dots stacked at center (blue)
+      drift:   2 dots offset L/R, 1 at center (amber)
+      alarm:   3 dots in a triangle spread (red)
+    """
+
+    DOT_FILL = {
+        "aligned": "#7eb6d9",
+        "drift": "#e0a458",
+        "alarm": "#cc4444",
+    }
+    DOT_POSITIONS = {
+        "aligned": [(0, 0), (0, 0), (0, 0)],
+        "drift": [(-12, 0), (12, 0), (0, 0)],
+        "alarm": [(-50, 30), (50, 30), (0, -55)],
+    }
+    SIZE = 160  # canvas dims; rings scaled to fit
+
+    def __init__(self, master, **kw):
+        super().__init__(
+            master,
+            width=self.SIZE,
+            height=self.SIZE,
+            bg=COLOR_PANEL,
+            highlightthickness=0,
+            **kw,
+        )
+        self._state: str = "aligned"
+        self._draw()
+
+    def set_state(self, state: str) -> None:
+        if state == self._state:
+            return
+        self._state = state
+        self._draw()
+
+    def _draw(self) -> None:
+        self.delete("all")
+        cx = cy = self.SIZE / 2
+        # 3 background rings (radii proportional: 100/75/50 in 220-unit space)
+        scale = self.SIZE / 220
+        for r, opacity in ((100, 0.30), (75, 0.45), (50, 0.60)):
+            stipple = "gray50" if opacity < 0.5 else ""
+            self.create_oval(
+                cx - r * scale, cy - r * scale,
+                cx + r * scale, cy + r * scale,
+                outline=COLOR_TEXT, width=1,
+                stipple=stipple,
+            )
+
+        # 3 colored dots at state-specific positions.
+        fill = self.DOT_FILL[self._state]
+        for dx, dy in self.DOT_POSITIONS[self._state]:
+            x = cx + dx * scale
+            y = cy + dy * scale
+            r = 7
+            # Subtle outer glow ring.
+            self.create_oval(
+                x - r - 2, y - r - 2, x + r + 2, y + r + 2,
+                fill="", outline=fill, width=1, stipple="gray25",
+            )
+            self.create_oval(
+                x - r, y - r, x + r, y + r,
+                fill=fill, outline="",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Mascot — pixel-art character built from platonic-solid silhouettes.
+# Idle-bobs and reacts to status changes + button presses.
+# ---------------------------------------------------------------------------
+
+
+class Mascot(tk.Canvas):
+    """Tiny pixel-art companion. Body parts:
+      head:  octahedron silhouette (diamond)
+      torso: cube silhouette (square with isometric edges)
+      feet:  two tetrahedron silhouettes (triangles)
+      eyes:  state-dependent (•_• calm, ^_^ happy, x_x alarm, o_o surprise)
+
+    Each "pixel" is a PIXEL_SCALE × PIXEL_SCALE actual rect, giving
+    the chunky retro look the user asked for. Animation is driven by
+    a self-scheduled after() loop at ~12 fps so the whole thing only
+    re-renders when something visually changes.
+    """
+
+    PIXEL_SCALE = 3
+    SPRITE_W = 22  # pixels of sprite art (not actual canvas px)
+    SPRITE_H = 26
+    CANVAS_W = SPRITE_W * PIXEL_SCALE
+    CANVAS_H = SPRITE_H * PIXEL_SCALE + 12  # extra room for the bob
+    FRAME_MS = 80  # ~12 fps
+
+    # Body palette — pulled from same hex set as the rings so the
+    # whole window stays color-consistent.
+    SKIN = "#c9d1d9"
+    SKIN_SHADE = "#7c8694"
+    OUTLINE = "#0f1116"
+    EYE_COLOR = "#0f1116"
+    HEAD_HAPPY = "#7CD3A0"
+    HEAD_DRIFT = "#E0B341"
+    HEAD_ALARM = "#E06D6D"
+
+    def __init__(self, master, **kw):
+        super().__init__(
+            master,
+            width=self.CANVAS_W,
+            height=self.CANVAS_H,
+            bg=COLOR_BG,
+            highlightthickness=0,
+            **kw,
+        )
+        # Animation state
+        self._tick = 0
+        self._mood: str = "calm"          # calm | happy | worried | alarm
+        self._action: str | None = None   # transient: 'jump'|'shake'|'think'
+        self._action_until_tick: int = 0
+        self._draw()
+        self.after(self.FRAME_MS, self._loop)
+
+    # -- public --------------------------------------------------------------
+
+    def set_mood(self, mood: str) -> None:
+        self._mood = mood
+
+    def react(self, kind: str, duration_frames: int = 12) -> None:
+        """Trigger a transient reaction animation (jump / shake / think).
+        Returns to the underlying mood when frames elapse."""
+        self._action = kind
+        self._action_until_tick = self._tick + duration_frames
+
+    # -- animation loop ------------------------------------------------------
+
+    def _loop(self) -> None:
+        try:
+            self._tick += 1
+            if self._action and self._tick >= self._action_until_tick:
+                self._action = None
+            self._draw()
+        finally:
+            self.after(self.FRAME_MS, self._loop)
+
+    # -- drawing -------------------------------------------------------------
+
+    def _px(self, x: int, y: int, w: int = 1, h: int = 1, fill: str = SKIN) -> None:
+        s = self.PIXEL_SCALE
+        self.create_rectangle(
+            x * s, y * s, (x + w) * s, (y + h) * s,
+            fill=fill, outline="",
+        )
+
+    def _draw(self) -> None:
+        self.delete("all")
+
+        # Bob: idle gentle sine; jump: stronger arc; shake: horizontal jitter.
+        bob_y = 0
+        bob_x = 0
+        if self._action == "jump":
+            # one full arc over duration
+            t = (self._action_until_tick - self._tick) / 12.0
+            bob_y = int(-8 * math.sin(math.pi * (1 - t)))
+        elif self._action == "shake":
+            bob_x = int(2 * math.sin(self._tick * 1.4))
+        elif self._action == "think":
+            bob_y = int(math.sin(self._tick / 2.0))
+        else:
+            bob_y = int(2 * math.sin(self._tick / 6.0))
+
+        cx = self.SPRITE_W // 2 + bob_x
+        head_top = 2 + bob_y
+
+        # ---- head (octahedron silhouette: diamond) -------------------------
+        head_color = {
+            "calm": self.SKIN,
+            "happy": self.HEAD_HAPPY,
+            "worried": self.HEAD_DRIFT,
+            "alarm": self.HEAD_ALARM,
+        }.get(self._mood, self.SKIN)
+
+        # Diamond drawn row-by-row (chunky pixel art):
+        #     #
+        #    ###
+        #   #####
+        #  #######
+        #   #####
+        #    ###
+        #     #
+        head_rows = [
+            (cx,     head_top,     1, 1),  # top point
+            (cx - 1, head_top + 1, 3, 1),
+            (cx - 2, head_top + 2, 5, 1),
+            (cx - 3, head_top + 3, 7, 1),
+            (cx - 2, head_top + 4, 5, 1),
+            (cx - 1, head_top + 5, 3, 1),
+            (cx,     head_top + 6, 1, 1),
+        ]
+        for x, y, w, h in head_rows:
+            self._px(x, y, w, h, head_color)
+
+        # Eyes — change with mood.
+        eye_y = head_top + 3
+        if self._mood == "happy":
+            # ^ ^
+            self._px(cx - 2, eye_y, 1, 1, self.EYE_COLOR)
+            self._px(cx - 1, eye_y - 1, 1, 1, self.EYE_COLOR)
+            self._px(cx + 1, eye_y - 1, 1, 1, self.EYE_COLOR)
+            self._px(cx + 2, eye_y, 1, 1, self.EYE_COLOR)
+        elif self._mood == "alarm":
+            # x x
+            self._px(cx - 2, eye_y, 1, 1, self.EYE_COLOR)
+            self._px(cx - 1, eye_y, 1, 1, self.EYE_COLOR)
+            self._px(cx + 1, eye_y, 1, 1, self.EYE_COLOR)
+            self._px(cx + 2, eye_y, 1, 1, self.EYE_COLOR)
+        elif self._mood == "worried":
+            # • •  (offset down-right slightly)
+            self._px(cx - 2, eye_y + 1, 1, 1, self.EYE_COLOR)
+            self._px(cx + 1, eye_y + 1, 1, 1, self.EYE_COLOR)
+        else:
+            # calm: blink occasionally
+            blink = (self._tick // 20) % 6 == 0
+            if blink:
+                self._px(cx - 2, eye_y + 1, 1, 1, self.EYE_COLOR)
+                self._px(cx + 1, eye_y + 1, 1, 1, self.EYE_COLOR)
+            else:
+                self._px(cx - 2, eye_y, 1, 1, self.EYE_COLOR)
+                self._px(cx + 1, eye_y, 1, 1, self.EYE_COLOR)
+
+        # ---- torso (cube silhouette: square + isometric edge highlight) ----
+        torso_top = head_top + 7
+        # 8x8 square body
+        for y in range(8):
+            self._px(cx - 3, torso_top + y, 7, 1, self.SKIN)
+        # Isometric "lid" hint (top-right diagonal shading).
+        self._px(cx + 1, torso_top, 3, 1, self.SKIN_SHADE)
+        self._px(cx + 2, torso_top + 1, 2, 1, self.SKIN_SHADE)
+        self._px(cx + 3, torso_top + 2, 1, 1, self.SKIN_SHADE)
+
+        # Outline corners (pixel-art bevel).
+        self._px(cx - 3, torso_top, 1, 1, self.OUTLINE)
+        self._px(cx + 3, torso_top, 1, 1, self.OUTLINE)
+        self._px(cx - 3, torso_top + 7, 1, 1, self.OUTLINE)
+        self._px(cx + 3, torso_top + 7, 1, 1, self.OUTLINE)
+
+        # ---- feet (two tetrahedron silhouettes: small triangles) -----------
+        feet_top = torso_top + 8
+        # left foot
+        self._px(cx - 3, feet_top, 1, 1, self.SKIN)
+        self._px(cx - 3, feet_top + 1, 2, 1, self.SKIN)
+        self._px(cx - 3, feet_top + 2, 3, 1, self.SKIN)
+        # right foot
+        self._px(cx + 3, feet_top, 1, 1, self.SKIN)
+        self._px(cx + 2, feet_top + 1, 2, 1, self.SKIN)
+        self._px(cx + 1, feet_top + 2, 3, 1, self.SKIN)
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +495,13 @@ class SymGUI(ctk.CTk):
             anchor="w",
         )
         self.label_status.grid(row=2, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        # Trinity rings indicator (right side of header) — same visual
+        # language as the public verify page so on-screen and in-browser
+        # tell the same story.
+        self.rings = TrinityRings(header)
+        self.rings.grid(row=0, column=1, rowspan=3, padx=(8, 12), pady=8, sticky="e")
+        header.grid_columnconfigure(1, weight=0)
 
         # Repo rows
         repos = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=8)
@@ -270,17 +577,29 @@ class SymGUI(ctk.CTk):
         )
         self.label_recent.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
 
-        # Narrative
+        # Narrative — taller textbox + one-click copy button.
         narrative = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=8)
         narrative.grid(row=4, column=0, padx=12, pady=6, sticky="nsew")
         narrative.grid_columnconfigure(0, weight=1)
         narrative.grid_rowconfigure(1, weight=1)
 
+        narr_header = ctk.CTkFrame(narrative, fg_color=COLOR_PANEL)
+        narr_header.grid(row=0, column=0, padx=12, pady=(8, 0), sticky="ew")
+        narr_header.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            narrative, text="Narrative",
+            narr_header, text="Narrative",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=COLOR_MUTED, anchor="w",
-        ).grid(row=0, column=0, padx=12, pady=(8, 0), sticky="w")
+        ).grid(row=0, column=0, sticky="w")
+
+        self.btn_copy_narrative = ctk.CTkButton(
+            narr_header, text="Copy", width=64, height=24,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_MUTED, hover_color="#7B8593",
+            command=self._action_copy_narrative,
+        )
+        self.btn_copy_narrative.grid(row=0, column=1, sticky="e")
 
         self.text_narrative = ctk.CTkTextbox(
             narrative,
@@ -288,9 +607,9 @@ class SymGUI(ctk.CTk):
             text_color=COLOR_TEXT,
             fg_color=COLOR_BG,
             wrap="word",
-            height=80,
+            height=180,         # taller — fits ~10 lines of narrative
         )
-        self.text_narrative.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="nsew")
+        self.text_narrative.grid(row=1, column=0, padx=12, pady=(4, 8), sticky="nsew")
         self.text_narrative.insert("1.0", "(no narrative yet — click Explain)")
         self.text_narrative.configure(state="disabled")
 
@@ -328,6 +647,16 @@ class SymGUI(ctk.CTk):
         )
         self.btn_settings.grid(row=0, column=4, padx=4, sticky="ew")
 
+        # Mascot — pixel-art companion in the bottom-right corner.
+        # Uses place() so it floats over its row, but we anchor it to
+        # the lower-right of the main window via lift().
+        # Mascot — pixel-art companion in the bottom-right corner.
+        # place() puts it on top of the button row by virtue of later-
+        # created z-order; we don't call tkraise() because Canvas
+        # overrides both lift/tkraise to operate on canvas items.
+        self.mascot = Mascot(self)
+        self.mascot.place(relx=1.0, rely=1.0, x=-12, y=-12, anchor="se")
+
     # ----- refresh ----------------------------------------------------------
 
     def _refresh(self) -> None:
@@ -352,6 +681,9 @@ class SymGUI(ctk.CTk):
                 text="(daemon not running — start the Scheduled Task)",
                 text_color=COLOR_MUTED,
             )
+            self.rings.set_state("drift")
+            if hasattr(self, "mascot"):
+                self.mascot.set_mood("worried")
             return
 
         self.label_fold.configure(text=status.get("system_fold") or "SYM-?")
@@ -370,6 +702,15 @@ class SymGUI(ctk.CTk):
             text=status_text,
             text_color=_status_color("drift_alarm" if alarm else overall),
         )
+
+        # Rings indicator + mascot mood track the same coherence state
+        # the public verify page uses.
+        coh = coherence_state(status)
+        self.rings.set_state(coh)
+        if hasattr(self, "mascot"):
+            self.mascot.set_mood(
+                {"aligned": "happy", "drift": "worried", "alarm": "alarm"}[coh]
+            )
 
         # Repo rows
         trinity = status.get("trinity") or {}
@@ -430,6 +771,8 @@ class SymGUI(ctk.CTk):
     def _action_audit(self) -> None:
         """Force a fresh audit cycle. Runs in a thread to avoid blocking Tk."""
         self.btn_audit.configure(state="disabled", text="Auditing…")
+        if hasattr(self, "mascot"):
+            self.mascot.react("shake", duration_frames=20)
 
         def work() -> None:
             try:
@@ -454,6 +797,8 @@ class SymGUI(ctk.CTk):
             self._set_narrative("(no current snapshot to explain — try Audit Now first)")
             return
         self.btn_explain.configure(state="disabled", text="Asking…")
+        if hasattr(self, "mascot"):
+            self.mascot.react("think", duration_frames=30)
 
         def work() -> None:
             try:
@@ -513,6 +858,21 @@ class SymGUI(ctk.CTk):
 
     def _action_settings(self) -> None:
         SettingsWindow(self)
+
+    def _action_copy_narrative(self) -> None:
+        """Copy the current narrative panel text to the system clipboard."""
+        text = self.text_narrative.get("1.0", "end").strip()
+        if not text or text.startswith("(no narrative"):
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()  # required on Windows so clipboard sticks after window loses focus
+        # Quick visual confirmation: button label flashes "Copied".
+        self.btn_copy_narrative.configure(text="Copied ✓")
+        self.after(1200, lambda: self.btn_copy_narrative.configure(text="Copy"))
+        # Mascot reaction.
+        if hasattr(self, "mascot"):
+            self.mascot.react("jump", duration_frames=12)
 
 
 # ---------------------------------------------------------------------------
