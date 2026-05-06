@@ -231,13 +231,23 @@ async def publish_attestation(
 
 
 # ---------------------------------------------------------------------------
-# Verify page (HTML)
+# Verify page (HTML) — served at both / and /verify so visitors can land
+# on the nice index without typing /verify explicitly.
 # ---------------------------------------------------------------------------
 
 
-@app.get("/verify")
-def verify_page():
+def _serve_verify_html():
     p = STATIC_DIR / "verify.html"
     if not p.is_file():
         raise HTTPException(503, "verify page not built (static/verify.html missing)")
     return FileResponse(p)
+
+
+@app.get("/")
+def root_page():
+    return _serve_verify_html()
+
+
+@app.get("/verify")
+def verify_page():
+    return _serve_verify_html()
