@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Symmetism · Verify</title>
+  <meta name="description" content="Browser-side recomputation of the Symmetism system fingerprint from raw GitHub data. No server trust required.">
+  <link rel="stylesheet" href="/static/verify.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+</head>
+<body class="theme-void">
+  <main class="page">
+    <header class="hero">
+      <div class="equation" aria-label="Q sub A, H sub S equals zero, for all A in so 3 1">
+        <span class="brace">{</span>Q<sub>A</sub>, H<sub>S</sub><span class="brace">}</span> = 0
+        <span class="quant">&nbsp;∀ A ∈ <i>so</i>(3,1)</span>
+      </div>
+      <div class="subtitle">Symmetism System Fingerprint</div>
+      <div class="fold mono" id="fold">SYM-····-····-····-····</div>
+      <div class="timestamp muted" id="timestamp">last verified: —</div>
+    </header>
+
+    <section class="rings" aria-hidden="true">
+      <svg class="trinity-rings" viewBox="0 0 220 220" width="220" height="220">
+        <circle cx="110" cy="110" r="100" fill="none" stroke="currentColor" stroke-width="1" opacity=".25"/>
+        <circle cx="110" cy="110" r="75"  fill="none" stroke="currentColor" stroke-width="1" opacity=".4"/>
+        <circle cx="110" cy="110" r="50"  fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/>
+        <g id="ring-points" transform="translate(110 110)">
+          <!-- 3 points populated by verify.js -->
+        </g>
+      </svg>
+    </section>
+
+    <section class="brackets" id="brackets">
+      <h2 class="muted small-caps">Conserved charges</h2>
+      <div id="bracket-list">
+        <div class="bracket-row pending"><span class="qid mono">Q_canonical</span><span class="status">…</span></div>
+        <div class="bracket-row pending"><span class="qid mono">Q_structure</span><span class="status">…</span></div>
+        <div class="bracket-row pending"><span class="qid mono">Q_trinity_R</span><span class="status">…</span></div>
+        <div class="bracket-row pending"><span class="qid mono">Q_trinity_P</span><span class="status">…</span></div>
+        <div class="bracket-row pending"><span class="qid mono">Q_cross_repo</span><span class="status">…</span></div>
+        <div class="bracket-row pending"><span class="qid mono">Q_secrets</span><span class="status">…</span></div>
+      </div>
+    </section>
+
+    <section class="action">
+      <button id="verify-btn" type="button" class="verify-btn">
+        Verify in your browser →
+      </button>
+      <div id="verify-result" class="verify-result" aria-live="polite"></div>
+    </section>
+
+    <footer class="page-footer">
+      <a href="https://github.com/Symmetism/Reflexivity" class="repo-link">Reflexivity</a>
+      ·
+      <a href="https://github.com/Symmetism/Platform" class="repo-link">Platform</a>
+    </footer>
+  </main>
+
+  <noscript>
+    <div class="noscript">
+      The verify page requires JavaScript for browser-side recomputation.
+      You can still verify manually via <code>git</code> + <code>sha256sum</code>
+      against the <a href="https://github.com/Symmetism/Reflexivity/blob/main/MANIFEST_CANONICAL.json">canonical manifest</a>.
+    </div>
+  </noscript>
+
+  <script type="module" src="/static/verify.js"></script>
+</body>
+</html>

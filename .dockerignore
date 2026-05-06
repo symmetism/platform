@@ -1,0 +1,22 @@
+# Build context = repo root. Strip non-app paths.
+.git
+.github
+.githooks
+docs
+_command
+tools
+shared
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.tox
+**/htmlcov
+**/.coverage
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.swp
+**/.env
+**/.env.*
+**/secrets/

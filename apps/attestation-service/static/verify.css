@@ -1,0 +1,195 @@
+/* Symmetism /verify — Design SoT D2 colors, D3 typography, D4 layout. */
+
+:root {
+  --void:     #0a0e14;
+  --bone:     #e8e6df;
+  --stable:   #7eb6d9;
+  --verified: #5fcc7d;
+  --drift:    #e0a458;
+  --alarm:    #cc4444;
+  --muted:    #5a6470;
+  --hairline: #1a1f28;
+  --serif: 'EB Garamond', 'Iowan Old Style', 'Apple Garamond', Garamond, 'Times New Roman', serif;
+  --mono:  'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--serif);
+  background: var(--void);
+  color: var(--bone);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.small-caps {
+  font-variant: small-caps;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 5rem 1.5rem 3rem;
+}
+
+/* ---- Hero ---- */
+.hero { text-align: center; }
+
+.equation {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 2.6rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+.equation sub { font-size: 0.55em; }
+.equation .brace { color: var(--stable); }
+.equation .quant {
+  font-style: italic;
+  color: var(--muted);
+  font-size: 0.78em;
+}
+
+.subtitle {
+  font-variant: small-caps;
+  letter-spacing: 0.12em;
+  font-size: 0.95rem;
+  color: var(--muted);
+  margin-top: 1.6rem;
+}
+
+.fold {
+  font-size: 1.7rem;
+  letter-spacing: 0.04em;
+  margin-top: 0.7rem;
+  font-weight: 500;
+}
+
+.timestamp {
+  margin-top: 0.8rem;
+  font-size: 0.9rem;
+  font-family: var(--mono);
+}
+
+/* ---- Trinity rings ---- */
+.rings {
+  display: flex;
+  justify-content: center;
+  margin: 2.6rem 0 1.4rem;
+  color: var(--stable);
+}
+.trinity-rings { transition: color 0.3s ease; }
+.trinity-rings.alarm { color: var(--alarm); }
+.trinity-rings.drift { color: var(--drift); }
+
+/* ---- Brackets list ---- */
+.brackets {
+  margin: 2.4rem 0 0;
+  border-top: 1px solid var(--hairline);
+  padding-top: 1.4rem;
+}
+.brackets h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.bracket-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.35rem 0;
+  font-family: var(--mono);
+  font-size: 0.95rem;
+}
+.bracket-row .qid { color: var(--bone); }
+.bracket-row .status { color: var(--muted); }
+.bracket-row.conserved .status { color: var(--stable); }
+.bracket-row.conserved .status::before { content: '✓ '; color: var(--stable); }
+.bracket-row.drift .status { color: var(--drift); }
+.bracket-row.drift .status::before { content: '⚠ '; color: var(--drift); }
+.bracket-row.alarm .status { color: var(--alarm); }
+.bracket-row.alarm .status::before { content: '✗ '; color: var(--alarm); }
+.bracket-row.pending .status { color: var(--muted); }
+
+/* ---- Verify button ---- */
+.action {
+  margin-top: 2.6rem;
+  text-align: center;
+}
+.verify-btn {
+  background: transparent;
+  color: var(--bone);
+  border: 1px solid var(--stable);
+  padding: 0.7rem 1.4rem;
+  font-family: var(--serif);
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.verify-btn:hover {
+  background: var(--stable);
+  color: var(--void);
+}
+.verify-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.verify-result {
+  margin-top: 1.2rem;
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  color: var(--muted);
+  min-height: 1.5em;
+  white-space: pre-wrap;
+}
+.verify-result.ok    { color: var(--verified); }
+.verify-result.fail  { color: var(--alarm); }
+
+/* ---- Footer ---- */
+.page-footer {
+  margin-top: 4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.repo-link {
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--muted);
+}
+.repo-link:hover { color: var(--bone); border-bottom-color: var(--bone); }
+
+/* ---- Noscript ---- */
+.noscript {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--alarm);
+  color: var(--void);
+  padding: 0.8rem;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+.noscript a { color: var(--void); }
+
+/* ---- Trinity ring points ---- */
+#ring-points circle { transition: cx 0.5s ease, cy 0.5s ease, fill 0.3s ease; }
+
+/* ---- Print ---- */
+@media print {
+  body { background: white; color: black; }
+  .verify-btn, .noscript { display: none; }
+  .equation .brace { color: black; }
+  .fold { color: black; }
+}
