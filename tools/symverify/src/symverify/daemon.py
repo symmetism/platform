@@ -493,61 +493,93 @@ def _find_pythonw() -> str:
     return exe
 
 
-def install_windows_service(task_name: str = DEFAULT_TASK_NAME) -> None:
-    """Create/replace a Scheduled Task that runs `sym daemon` at logon."""
+def _ps_quote(s: str) -> str:
+    """Wrap a string in PowerShell single quotes, doubling embedded single
+    quotes (PS literal-string escape rules)."""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _run_powershell(script: str) -> tuple[int, str, str]:
+    """Run a PowerShell command via powershell.exe; return (rc, stdout, stderr)."""
     import subprocess
 
+    res = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return res.returncode, res.stdout, res.stderr
+
+
+def install_windows_service(task_name: str = DEFAULT_TASK_NAME) -> None:
+    """Create/replace a Scheduled Task that runs `sym daemon` at logon.
+
+    Uses the PowerShell ScheduledTasks cmdlets (Register-ScheduledTask)
+    rather than schtasks.exe because Windows 11 frequently rejects
+    schtasks /create from non-elevated shells with "Access is denied",
+    while Register-ScheduledTask succeeds for the current user.
+    """
+    import os as _os
+
     pythonw = _find_pythonw()
-    cmd = f'"{pythonw}" -m symverify daemon'
-    args = [
-        "schtasks",
-        "/create",
-        "/tn",
-        task_name,
-        "/tr",
-        cmd,
-        "/sc",
-        "ONLOGON",
-        "/rl",
-        "LIMITED",
-        "/it",
-        "/f",
-    ]
-    res = subprocess.run(args, capture_output=True, text=True)
-    if res.returncode != 0:
+    user = f"{_os.environ.get('COMPUTERNAME', '')}\\{_os.environ.get('USERNAME', '')}".strip("\\")
+    if not user:
+        raise RuntimeError("could not determine current user (COMPUTERNAME/USERNAME unset)")
+
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$action = New-ScheduledTaskAction -Execute {_ps_quote(pythonw)} -Argument '-m symverify daemon'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User {_ps_quote(user)}
+$principal = New-ScheduledTaskPrincipal -UserId {_ps_quote(user)} -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 0) -Priority 7
+Register-ScheduledTask -TaskName {_ps_quote(task_name)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+""".strip()
+    rc, out, err = _run_powershell(script)
+    if rc != 0:
         raise RuntimeError(
-            f"schtasks /create failed: {res.stderr.strip() or res.stdout.strip()}"
+            f"Register-ScheduledTask failed: {(err or out).strip()}"
         )
 
 
 def uninstall_windows_service(task_name: str = DEFAULT_TASK_NAME) -> None:
     """Delete the scheduled task. Idempotent (no error if absent)."""
-    import subprocess
-
-    res = subprocess.run(
-        ["schtasks", "/delete", "/tn", task_name, "/f"],
-        capture_output=True,
-        text=True,
+    script = (
+        "if (Get-ScheduledTask -TaskName "
+        f"{_ps_quote(task_name)} -ErrorAction SilentlyContinue) {{ "
+        f"Unregister-ScheduledTask -TaskName {_ps_quote(task_name)} -Confirm:$false }}"
     )
-    if res.returncode != 0 and "cannot find" not in res.stderr.lower():
+    rc, out, err = _run_powershell(script)
+    if rc != 0:
         raise RuntimeError(
-            f"schtasks /delete failed: {res.stderr.strip() or res.stdout.strip()}"
+            f"Unregister-ScheduledTask failed: {(err or out).strip()}"
         )
 
 
 def query_windows_service(task_name: str = DEFAULT_TASK_NAME) -> dict | None:
     """Return basic info about the scheduled task, or None if not installed."""
-    import subprocess
-
-    res = subprocess.run(
-        ["schtasks", "/query", "/tn", task_name, "/fo", "LIST"],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
+    script = f"""
+$t = Get-ScheduledTask -TaskName {_ps_quote(task_name)} -ErrorAction SilentlyContinue
+if ($null -eq $t) {{ exit 2 }}
+$i = Get-ScheduledTaskInfo -TaskName {_ps_quote(task_name)}
+'TaskName: ' + $t.TaskName
+'Status: '   + $t.State
+'Last Run Time: ' + $i.LastRunTime
+'Next Run Time: ' + $i.NextRunTime
+'Last Result: '   + ('0x{{0:X8}}' -f $i.LastTaskResult)
+""".strip()
+    rc, out, err = _run_powershell(script)
+    if rc != 0:
         return None
     info: dict[str, str] = {}
-    for line in res.stdout.splitlines():
+    for line in out.splitlines():
         if ":" in line:
             k, _, v = line.partition(":")
             info[k.strip()] = v.strip()
