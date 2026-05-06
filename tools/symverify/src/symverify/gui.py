@@ -264,9 +264,14 @@ class PlatonicCycle(tk.Canvas):
 
     PIXEL_SCALE_DEFAULT = 3
     GRID_DEFAULT = 22         # pixel grid is GRID × GRID per shape
-    FRAME_MS = 60             # ~16 fps
+    FRAME_MS = 50             # 20 fps — smoother than 16
 
-    HOLD_FRAMES = 60          # ~3.6 s per shape before snapping to next
+    # Each shape holds for HOLD_FRAMES, then crossfades to the next
+    # over TRANSITION_FRAMES. With FRAME_MS=50: HOLD≈12s, TRANSITION≈1.5s.
+    # Long holds + a real crossfade replace the visible "snap" the
+    # operator was perceiving as a freeze + reset.
+    HOLD_FRAMES = 240
+    TRANSITION_FRAMES = 30
     EDGE_COLOR = "#7eb6d9"    # match aligned-state blue
 
     PHI = (1 + 5 ** 0.5) / 2  # golden ratio, used in icos/dodec verts
@@ -312,9 +317,14 @@ class PlatonicCycle(tk.Canvas):
         ]
         return v, e
 
-    @classmethod
-    def _icosahedron(cls):
-        p = cls.PHI
+    @staticmethod
+    def _icosahedron():
+        # @staticmethod (not classmethod) so the bare descriptor stored
+        # in SHAPES is directly callable. Calling a classmethod descriptor
+        # without going through class-attribute access doesn't bind cls,
+        # which would TypeError silently inside the after()-callback chain
+        # and freeze the animation on the last successful frame.
+        p = PlatonicCycle.PHI
         v = [
             (0, 1, p), (0, -1, p), (0, 1, -p), (0, -1, -p),
             (1, p, 0), (-1, p, 0), (1, -p, 0), (-1, -p, 0),
@@ -333,9 +343,9 @@ class PlatonicCycle(tk.Canvas):
         ]
         return v, e
 
-    @classmethod
-    def _dodecahedron(cls):
-        p = cls.PHI
+    @staticmethod
+    def _dodecahedron():
+        p = PlatonicCycle.PHI
         ip = 1 / p
         v = [
             ( 1,  1,  1), ( 1,  1, -1), ( 1, -1,  1), ( 1, -1, -1),
@@ -412,8 +422,6 @@ class PlatonicCycle(tk.Canvas):
     def _loop(self) -> None:
         try:
             self._tick += 1
-            if self._tick % self.HOLD_FRAMES == 0:
-                self._shape_idx = (self._shape_idx + 1) % len(self.SHAPES)
             self._draw()
         finally:
             self.after(self.FRAME_MS, self._loop)
@@ -434,30 +442,25 @@ class PlatonicCycle(tk.Canvas):
         y2 = y * ct - z2 * st
         return x2, y2
 
-    def _draw(self) -> None:
-        _, fn = self.SHAPES[self._shape_idx]
-        verts3, edges = fn()
-
-        # Continuous rotation — never wrapped via modulo, since the
-        # wraparound (tick=359 → tick=0) would produce a small visible
-        # discontinuity. cos/sin handle large theta values fine.
-        theta = self._tick * (math.pi / 90.0)
-
-        # Project all verts; find bounds for scaling.
+    def _rasterize_shape(
+        self,
+        shape_fn,
+        theta: float,
+    ) -> set[tuple[int, int]]:
+        """Project a shape's wireframe at the given rotation and return
+        the set of (px, py) cells its edges touch on the pixel grid."""
+        verts3, edges = shape_fn()
         projected = [self._project(v, theta) for v in verts3]
         xs = [p[0] for p in projected]
         ys = [p[1] for p in projected]
         max_extent = max(max(abs(min(xs)), abs(max(xs))),
                           max(abs(min(ys)), abs(max(ys))), 0.001)
-        # Leave a 1-pixel margin inside the grid.
         scale = (self.grid_dim / 2 - 1) / max_extent
         cx = self.grid_dim / 2
         cy = self.grid_dim / 2
-
         pts = [(cx + px * scale, cy + py * scale) for px, py in projected]
 
-        # Rasterize each edge by stepping integer points along it.
-        new_active: set[tuple[int, int]] = set()
+        active: set[tuple[int, int]] = set()
         for a, b in edges:
             x1, y1 = pts[a]
             x2, y2 = pts[b]
@@ -467,10 +470,42 @@ class PlatonicCycle(tk.Canvas):
                 px = int(round(x1 + (x2 - x1) * t))
                 py = int(round(y1 + (y2 - y1) * t))
                 if 0 <= px < self.grid_dim and 0 <= py < self.grid_dim:
-                    new_active.add((px, py))
+                    active.add((px, py))
+        return active
+
+    def _draw(self) -> None:
+        # Cycle position: which shape, and where in its hold/transition.
+        cycle_len = self.HOLD_FRAMES + self.TRANSITION_FRAMES
+        full_idx = self._tick // cycle_len
+        cycle_pos = self._tick % cycle_len
+        shape_idx = full_idx % len(self.SHAPES)
+        next_idx = (shape_idx + 1) % len(self.SHAPES)
+
+        # Continuous rotation regardless of which shape is showing.
+        theta = self._tick * (math.pi / 90.0)
+
+        cur_active = self._rasterize_shape(self.SHAPES[shape_idx][1], theta)
+
+        if cycle_pos < self.HOLD_FRAMES:
+            # Pure current shape, no blend.
+            new_active = cur_active
+        else:
+            # Crossfade. progress: 0 → 1 across TRANSITION_FRAMES.
+            # Both shapes rotate together, both sets are computed,
+            # and we deterministically pick a fraction of each.
+            progress = (cycle_pos - self.HOLD_FRAMES) / self.TRANSITION_FRAMES
+            nxt_active = self._rasterize_shape(self.SHAPES[next_idx][1], theta)
+
+            # Sort each set by a stable hash so the same pixels are
+            # always the "first to fade" — no random churn frame-to-frame.
+            cur_sorted = sorted(cur_active, key=lambda p: (p[0] * 73 + p[1] * 11) % 1024)
+            nxt_sorted = sorted(nxt_active, key=lambda p: (p[0] * 73 + p[1] * 11) % 1024)
+            n_cur = int(round(len(cur_sorted) * (1.0 - progress)))
+            n_nxt = int(round(len(nxt_sorted) * progress))
+            new_active = set(cur_sorted[:n_cur]) | set(nxt_sorted[:n_nxt])
 
         # Diff against last frame: only itemconfig the cells that
-        # actually changed. Cuts Tk traffic ~10× and prevents flicker.
+        # actually changed. Avoids visible flicker, cuts Tk traffic ~10×.
         to_light = new_active - self._active
         to_clear = self._active - new_active
         for px, py in to_light:

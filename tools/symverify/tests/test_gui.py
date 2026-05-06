@@ -190,3 +190,23 @@ def test_platonic_cycle_lists_five_shapes():
     assert names == [
         "tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron",
     ]
+
+
+def test_platonic_shape_descriptors_callable_bare():
+    """Regression: PlatonicCycle._draw pulls bare descriptors from
+    SHAPES and calls them — `fn = self.SHAPES[i][1]; fn()`. If a shape
+    was @classmethod (or anything that needs class-attribute binding),
+    this would TypeError silently inside Tk's after() callback chain
+    and freeze the animation on the last successful frame for several
+    seconds at a time. All five shape methods must be @staticmethod
+    or otherwise callable bare.
+    """
+    for name, fn in gui.PlatonicCycle.SHAPES:
+        try:
+            v, e = fn()  # exact same pattern as _draw
+        except TypeError as exc:
+            pytest.fail(
+                f"{name}: bare descriptor not callable — {exc}. "
+                f"Must be @staticmethod, not @classmethod."
+            )
+        assert len(v) > 0 and len(e) > 0, f"{name}: empty geometry"
