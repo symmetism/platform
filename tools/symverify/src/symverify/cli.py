@@ -476,6 +476,161 @@ def service_status_cmd(task_name: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# `sym push` and `sym scaffold` (F11)
+# ---------------------------------------------------------------------------
+
+
+@main.command("push")
+@click.argument("target")
+@click.option("-m", "--message", required=True, help="Commit message.")
+@click.option("--watch", is_flag=True,
+              help="After push, poll the deployed servers' /__manifest until "
+                   "the new commit SHA appears (or 10 min timeout).")
+@click.option("--attest", is_flag=True,
+              help="After --watch converges, invoke `sym attest` to publish "
+                   "the new system fold to the public Gist.")
+@click.option("--skip-tests", is_flag=True,
+              help="Skip the pytest pre-gate (use sparingly).")
+@click.option("--skip-anchor", is_flag=True,
+              help="Skip MANIFEST_CANONICAL re-hash pre-gate.")
+@click.option("--skip-secret-scan", is_flag=True,
+              help="Skip the secret regex scan of staged diff.")
+@click.option("--sign", is_flag=True, help="GPG-sign the commit.")
+def push_cmd(target: str, message: str, watch: bool, attest: bool,
+             skip_tests: bool, skip_anchor: bool, skip_secret_scan: bool,
+             sign: bool) -> None:
+    """sym push <repo>[/<scope>] -m "msg" — staged-commit-push pipeline.
+
+    Runs the Process SoT P5 pre-gates (anchor verify, secret scan,
+    pytest), stages, commits, pushes. With --watch it polls the
+    deployed server until the new commit SHA appears in /__manifest.
+    With --attest (implies --watch) it then publishes the new system
+    fold via the attestation service.
+
+    \b
+    Examples:
+      sym push reflexivity -m "feat: new physics module"
+      sym push platform/apps/attestation-service -m "fix: cache TTL"
+      sym push reflexivity --watch --attest -m "feat: F12 trinity poll"
+    """
+    from symverify import push as _push
+
+    console = Console()
+
+    def on_event(stage: str, detail: str) -> None:
+        console.print(f"[{render.MUTED}]→[/] {stage:14s}  {detail}")
+
+    try:
+        result = _push.run_push(
+            target, message,
+            skip_tests=skip_tests,
+            skip_anchor=skip_anchor,
+            skip_secret_scan=skip_secret_scan,
+            sign=sign,
+            on_event=on_event,
+        )
+    except _push.PushError as e:
+        console.print(f"[{render.ALARM}][error][/] {e}")
+        raise SystemExit(1)
+
+    # Render pre-gate results.
+    console.print()
+    for g in result.pre_gates:
+        marker = (
+            f"[{render.STABLE}]✓[/]" if g.ok else f"[{render.ALARM}]✗[/]"
+        )
+        console.print(f"  {marker} {g.name:14s} [{render.MUTED}]{g.detail}[/]")
+
+    if result.alarm():
+        console.print(
+            f"\n[{render.ALARM}]push aborted: pre-gate failed (changes left "
+            f"unstaged in working tree)[/]"
+        )
+        raise SystemExit(1)
+
+    if result.staged_count == 0:
+        console.print(f"\n[{render.MUTED}]nothing to commit ({target!r} clean)[/]")
+        return
+
+    console.print(
+        f"\n  [{render.STABLE}]✓[/] commit  [{render.STABLE}]{result.short_sha}[/]  "
+        f"({result.staged_count} file(s)) → {result.pushed_to}"
+    )
+
+    if watch or attest:
+        console.print()
+        console.print(f"[{render.MUTED}]waiting for server convergence on "
+                      f"{result.short_sha}…[/]")
+
+        def on_tick(elapsed: int, latest: str) -> None:
+            console.print(
+                f"  [{render.MUTED}]+{elapsed:3d}s  server reports {latest}[/]"
+            )
+
+        converged = _push.watch_for_convergence(
+            result.repo_name, result.short_sha,
+            timeout_sec=600, poll_sec=10, on_tick=on_tick,
+        )
+        if not converged:
+            console.print(
+                f"[{render.DRIFT}]⚠ timed out waiting for server to roll[/]"
+            )
+            raise SystemExit(2)
+        console.print(f"[{render.STABLE}]✓ servers converged[/]")
+
+        if attest:
+            console.print()
+            console.print(f"[{render.MUTED}]publishing attestation…[/]")
+            ctx = click.get_current_context()
+            ctx.invoke(
+                attest_cmd,
+                service_url="https://symmetism.com",
+                token_file=None,
+            )
+
+
+@main.command("scaffold")
+@click.argument("target")
+@click.option("--force", is_flag=True,
+              help="Overwrite existing files in the target dir.")
+def scaffold_cmd(target: str, force: bool) -> None:
+    """sym scaffold <repo>/<app-name> — generate a Symmetism-tracked app.
+
+    Writes pyproject.toml, Dockerfile, FastAPI main.py, the
+    /__manifest helper, README, and a Caddy snippet under
+    <repo>/apps/<app-name>/. Idempotent only with --force; refuses
+    to clobber existing dirs by default.
+
+    \b
+    Examples:
+      sym scaffold platform/coherence-dashboard
+      sym scaffold reflexivity/lean-verifier --force
+    """
+    from symverify import scaffold as _scaffold
+
+    console = Console()
+    try:
+        result = _scaffold.scaffold_app(target, force=force)
+    except _scaffold.ScaffoldError as e:
+        console.print(f"[{render.ALARM}][error][/] {e}")
+        raise SystemExit(1)
+
+    console.print(
+        f"[{render.STABLE}]✓[/] scaffolded [{render.STABLE}]{result.app_name}[/] "
+        f"in {result.repo_name} at [{render.MUTED}]{result.app_dir}[/]"
+    )
+    for f in result.files_written:
+        rel = f.relative_to(result.app_dir.parent)
+        console.print(f"  [{render.MUTED}]{rel}[/]")
+    console.print()
+    console.print(f"[{render.MUTED}]next steps:[/]")
+    console.print(f"  1. Edit src/{result.app_name.replace('-', '_')}/main.py with your routes")
+    console.print(f"  2. Add the Caddy snippet from {result.caddy_snippet_path.name} to server/Caddyfile")
+    console.print(f"  3. Add the service to server/compose.yaml")
+    console.print(f"  4. sym push {result.repo_name}/apps/{result.app_name} -m \"feat: scaffold {result.app_name}\"")
+
+
+# ---------------------------------------------------------------------------
 # `sym attest` (H4)
 # ---------------------------------------------------------------------------
 
