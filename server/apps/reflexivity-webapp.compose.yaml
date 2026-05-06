@@ -1,0 +1,32 @@
+# Per-app compose: reflexivity-webapp.
+#
+# Image is pulled from GHCR by Watchtower. Operator places the env
+# file at /etc/symmetism/reflexivity-webapp.env on the VPS containing:
+#   SYMVERIFY_TOKEN=<32-byte hex>
+#   FRAMEWORK_VERSION=<semver>          (optional)
+#
+# The label com.centurylinklabs.watchtower.enable=true is what makes
+# Watchtower poll/upgrade this container. Removing the label freezes
+# the image at whatever's currently deployed.
+
+services:
+  reflexivity-webapp:
+    image: ghcr.io/symmetism/reflexivity-webapp:latest
+    container_name: reflexivity-webapp
+    restart: unless-stopped
+    pull_policy: always
+    networks:
+      - symmetism
+    env_file:
+      - /etc/symmetism/reflexivity-webapp.env
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "org.symmetism.app=reflexivity-webapp"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:5000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # No host port mapping — Caddy reaches it on the symmetism network.
+    # Port 5000 is exposed at the container level by the Dockerfile.

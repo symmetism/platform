@@ -1,0 +1,52 @@
+# Symmetism Caddy reverse proxy (battle plan F6).
+#
+# - reflexivity.symmetism.com  → reflexivity-webapp container (port 5000)
+# - SSE on /verify gets long timeouts + no buffering (flush_interval -1)
+# - / and other routes pass through normally
+# - HTTPS via Let's Encrypt automatic provisioning
+#
+# Rate limiting is intentionally absent here. nginx (the prior stack)
+# had per-route rate-limit zones; Caddy core doesn't have rate
+# limiting and we're skipping the third-party plugin for v1. Track:
+# add caddy-ratelimit module + zones for /probe (30/min) and
+# /montecarlo (6/min) post-Phase F.
+
+{
+    # Global options
+    email ryanscottwright@gmail.com  # Let's Encrypt contact
+    auto_https disable_redirects
+    admin off                        # disable :2019 admin API
+}
+
+reflexivity.symmetism.com {
+    encode gzip zstd
+
+    log {
+        output file /var/log/caddy/reflexivity.access.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+    }
+
+    # SSE-friendly: /verify holds connections for long verification runs.
+    # flush_interval -1 disables internal buffering so events stream live.
+    @sse path /verify
+    handle @sse {
+        reverse_proxy reflexivity-webapp:5000 {
+            flush_interval -1
+            transport http {
+                read_timeout    24h
+                write_timeout   24h
+                dial_timeout    10s
+            }
+        }
+    }
+
+    # Everything else.
+    reverse_proxy reflexivity-webapp:5000 {
+        transport http {
+            read_timeout 60s
+            dial_timeout 5s
+        }
+    }
+}

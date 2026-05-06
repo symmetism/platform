@@ -1,0 +1,62 @@
+# Symmetism top-level docker-compose (battle plan F6).
+#
+# Orchestrates: Caddy (reverse proxy + auto-HTTPS) and Watchtower
+# (60-second poll on labeled containers; rolling restart on new images).
+#
+# Per-app compose files live at server/apps/<name>.compose.yaml and
+# are pulled in via the `include` directive — see bottom.
+
+name: symmetism
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    networks:
+      - symmetism
+    healthcheck:
+      test: ["CMD", "wget", "-qSO-", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=UTC
+      - WATCHTOWER_POLL_INTERVAL=60          # seconds
+      - WATCHTOWER_LABEL_ENABLE=true         # only update opted-in containers
+      - WATCHTOWER_CLEANUP=true              # remove old images
+      - WATCHTOWER_ROLLING_RESTART=true
+      - WATCHTOWER_INCLUDE_RESTARTING=true
+      - WATCHTOWER_NOTIFICATIONS=
+    command: ["--interval", "60", "--label-enable", "--cleanup", "--rolling-restart"]
+
+networks:
+  symmetism:
+    name: symmetism
+    driver: bridge
+
+volumes:
+  caddy_data:
+    name: caddy_data
+  caddy_config:
+    name: caddy_config
+  caddy_logs:
+    name: caddy_logs
+
+include:
+  - apps/reflexivity-webapp.compose.yaml
