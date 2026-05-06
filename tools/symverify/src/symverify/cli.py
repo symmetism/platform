@@ -234,9 +234,23 @@ def status(explain: bool) -> None:
                 )
             )
 
-    # System fingerprint = first repo's trinity for now (sym fold lands at G1)
-    first_meta = next(iter(meta.values()), {})
-    fingerprint = first_meta.get("trinity", "<no-trinity>")
+    # G1: system fold over both repos' trinities + cross-repo invariants.
+    trinities = {
+        name: m.get("trinity", "")
+        for name, m in meta.items()
+        if m.get("trinity")
+    }
+    # Merge invariants — they should agree across repos when Q_cross_repo
+    # is conserved; if they don't, _trinity_bracket on Q_cross_repo will
+    # already have flagged it.
+    fold_invariants: dict[str, str] = {}
+    for inv in (state.invariants_R, state.invariants_P):
+        for k, v in inv.items():
+            fold_invariants.setdefault(k, v)
+    if trinities:
+        fingerprint = fp.system_fold(trinities, fold_invariants, __version__)
+    else:
+        fingerprint = "<no-fold>"
 
     panel = render.render_full_status(
         fingerprint=fingerprint,
@@ -436,6 +450,88 @@ def init() -> None:
     # Defer to status (the command above) by invoking it programmatically.
     ctx = click.get_current_context()
     ctx.invoke(status, explain=False)
+
+
+# ---------------------------------------------------------------------------
+# `sym fold` (G1 / G2)
+# ---------------------------------------------------------------------------
+
+
+@main.command("fold")
+@click.option(
+    "--verify",
+    is_flag=True,
+    help="Recompute cross-repo invariants and check Q_cross_repo bracket.",
+)
+def fold_cmd(verify: bool) -> None:
+    """Print the system fold — a 16-char Crockford fingerprint over
+    both repos' trinities plus cross-repo invariants. Stable when
+    everything is aligned; changes on any drift.
+    """
+    repos = config.load_repos()
+    if not repos:
+        click.echo("no repos in ~/.symmetism/config/repos.toml", err=True)
+        raise SystemExit(2)
+    servers = config.load_servers()
+    state, meta = _build_state(repos, servers)
+
+    trinities = {
+        name: m.get("trinity", "")
+        for name, m in meta.items()
+        if m.get("trinity")
+    }
+    invariants: dict[str, str] = {}
+    for inv in (state.invariants_R, state.invariants_P):
+        for k, v in inv.items():
+            invariants.setdefault(k, v)
+
+    if not trinities:
+        click.echo("no trinity fingerprints — nothing to fold", err=True)
+        raise SystemExit(2)
+
+    folded = fp.system_fold(trinities, invariants, __version__)
+
+    console = Console()
+    console.print(f"[bold {render.STABLE}]System fold:[/] [{render.STABLE}]{folded}[/]")
+    console.print()
+    console.print(f"[{render.MUTED}]composition[/]")
+    for name, t in sorted(trinities.items()):
+        console.print(f"  {name:14s} trinity = [{render.STABLE}]{t}[/]")
+    if invariants:
+        console.print(f"  [{render.MUTED}]invariants:[/]")
+        for k, v in sorted(invariants.items()):
+            shown = v if len(v) <= 32 else f"{v[:30]}…"
+            console.print(f"    {k:32s} = [{render.MUTED}]{shown}[/]")
+    console.print(f"  symverify_version = [{render.MUTED}]{__version__}[/]")
+
+    if verify:
+        cmd_dir = config.command_dir()
+        registry_path = cmd_dir / "STABILIZER_REGISTRY.json"
+        if not registry_path.is_file():
+            console.print(f"[{render.ALARM}]no registry at {registry_path}[/]")
+            raise SystemExit(2)
+        registry = Registry.load(registry_path)
+        report = registry.audit(state)
+        cross = next(
+            (b for b in report.brackets if b.charge_id == "Q_cross_repo"),
+            None,
+        )
+        if cross is None:
+            console.print(f"[{render.ALARM}]Q_cross_repo not in registry[/]")
+            raise SystemExit(2)
+        marker = (
+            f"[{render.STABLE}]✓[/]"
+            if cross.status == STATUS_CONSERVED
+            else (
+                f"[{render.DRIFT}]⚠[/]"
+                if cross.status == STATUS_DRIFT_EXPECTED
+                else f"[{render.ALARM}]✗[/]"
+            )
+        )
+        console.print()
+        console.print(f"  Q_cross_repo  {marker}  [{render.MUTED}]{cross.descriptor}[/]")
+        if cross.status == STATUS_DRIFT_ALARM:
+            raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
