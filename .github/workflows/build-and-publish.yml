@@ -1,16 +1,20 @@
 name: Build and Publish
 
-# Mirrors Reflexivity's build-and-publish.yml. Triggers on push to main
-# when an app under apps/<name>/ changes. Builds the image, pushes to
-# ghcr.io/symmetism/<name>:<sha> + :latest. Watchtower on the VPS
-# picks up the new tag within 60s and rolls.
+# Mirrors Reflexivity's build-and-publish.yml. Builds + pushes
+# ghcr.io/symmetism/<name>:<sha> + :latest for each app under
+# apps/<name>/ that has a Dockerfile. Watchtower on the VPS picks
+# up the new tag within 60s and rolls.
+#
+# We deliberately fire on EVERY push to main (no `paths` filter)
+# so the server's reported commit_sha always matches git HEAD —
+# this keeps Q_trinity_P / Q_trinity_R brackets conserved even
+# when a commit only touches docs, README, .gitattributes, or
+# tools/. The detect step below skips apps that lack a Dockerfile,
+# and Buildx layer-cache makes no-content-change rebuilds cheap.
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/**'
-      - '.github/workflows/build-and-publish.yml'
   workflow_dispatch:
 
 permissions:
@@ -28,23 +32,16 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Detect changed app dirs
+      - name: Detect app dirs to build
         id: changes
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            mapfile -t apps_arr < <(ls apps 2>/dev/null || true)
-          elif ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-            mapfile -t apps_arr < <(ls apps 2>/dev/null || true)
-          else
-            mapfile -t apps_arr < <(
-              git diff --name-only HEAD~1 HEAD \
-                | awk -F/ '/^apps\//{print $2}' \
-                | sort -u
-            )
-          fi
-          # Only include dirs that actually have a Dockerfile.
+          # Always build every app with a Dockerfile. We rely on Buildx
+          # layer cache to keep no-content-change rebuilds cheap, and
+          # this guarantees the server's IMAGE_GIT_SHA always matches
+          # git HEAD — which is what Q_trinity_P checks against.
+          mapfile -t apps_arr < <(ls apps 2>/dev/null || true)
           built=()
           for a in "${apps_arr[@]}"; do
             [[ -f "apps/${a}/Dockerfile" ]] && built+=("$a")
