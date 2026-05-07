@@ -31,6 +31,7 @@ dependencies = [
   "openai>=1.40",
   "apscheduler>=3.10",
   "python-dotenv>=1.0",
+  "paramiko>=3.4",          # used by symverify.deploy for SSH/SFTP
 ]
 
 [project.optional-dependencies]

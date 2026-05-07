@@ -476,6 +476,76 @@ def service_status_cmd(task_name: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# `sym deploy` — apply Platform/server/ changes to the VPS
+# ---------------------------------------------------------------------------
+
+
+@main.command("deploy")
+@click.option("--dry-run", is_flag=True,
+              help="Scan + report what would change; don't connect to VPS.")
+def deploy_cmd(dry_run: bool) -> None:
+    """sym deploy — push local Platform/server/ changes to the VPS.
+
+    SSHes in as the configured user, SFTP-uploads any changed
+    Caddyfile / compose / per-app config, sudos to apply them under
+    /srv/symmetism/, migrates per-app env files when an app is
+    renamed (single-add + single-remove pattern), creates env files
+    for new apps from ~/.symmetism/secrets/symverify.<name>.token,
+    runs `docker compose pull && docker compose up -d
+    --remove-orphans`, then restarts the Caddy container so the new
+    Caddyfile is picked up (Caddy admin API is off in our setup).
+
+    Idempotent: re-running with no local changes is a no-op.
+
+    Requires ~/.symmetism/config/deploy.toml — see
+    symverify/deploy.py docstring for the schema.
+    """
+    from symverify import deploy as _deploy
+
+    console = Console()
+
+    def on_event(kind: str, detail: str) -> None:
+        if kind == "step":
+            console.print(f"[{render.MUTED}]→[/] {detail}")
+        elif kind == "warn":
+            console.print(f"[{render.DRIFT}]⚠ {detail}[/]")
+        else:
+            for line in detail.splitlines():
+                if line.strip():
+                    console.print(f"  [{render.MUTED}]{line}[/]")
+
+    try:
+        summary = _deploy.deploy(dry_run=dry_run, on_event=on_event)
+    except _deploy.DeployError as e:
+        console.print(f"[{render.ALARM}][error][/] {e}")
+        raise SystemExit(1)
+
+    console.print()
+    if summary["dry_run"]:
+        console.print(
+            f"[{render.STABLE}]✓[/] dry-run: {len(summary['staged_files'])} "
+            f"files would be uploaded to {summary['host']}"
+        )
+        return
+
+    console.print(
+        f"[{render.STABLE}]✓[/] deployed to {summary['host']}: "
+        f"{summary['uploaded']} uploaded, {summary['skipped']} unchanged"
+    )
+    if summary["renamed_envs"]:
+        for r in summary["renamed_envs"]:
+            console.print(f"  [{render.MUTED}]renamed env:[/] {r['old']}.env → {r['new']}.env")
+    if summary["new_envs"]:
+        console.print(f"  [{render.MUTED}]created env(s):[/] {', '.join(summary['new_envs'])}")
+    if summary["removed_orphans"]:
+        console.print(f"  [{render.MUTED}]removed orphans:[/] {', '.join(summary['removed_orphans'])}")
+    if summary.get("docker_ps"):
+        console.print()
+        for line in summary["docker_ps"].splitlines():
+            console.print(f"  [{render.MUTED}]{line}[/]")
+
+
+# ---------------------------------------------------------------------------
 # `sym gui` — Windows GUI app
 # ---------------------------------------------------------------------------
 

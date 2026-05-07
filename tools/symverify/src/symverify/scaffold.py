@@ -384,7 +384,13 @@ def scaffold_app(
     written: list[Path] = []
 
     def _write(path: Path, content: str) -> None:
-        path.write_text(content, encoding="utf-8")
+        # Write LF line endings explicitly. On Windows, Path.write_text in
+        # text mode translates "\n" → "\r\n", which then conflicts with the
+        # repo's `eol=lf` .gitattributes rule and forces a `git rm --cached
+        # -r . && git reset --hard` cycle after every scaffold to bring
+        # local==git back to byte-equality. Writing bytes directly skips
+        # the translation entirely and matches what git stores in blobs.
+        path.write_bytes(content.encode("utf-8"))
         written.append(path)
 
     _write(app_dir / "pyproject.toml", _pyproject(app_name, pkg_name))

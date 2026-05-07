@@ -116,3 +116,18 @@ def test_scaffold_unknown_repo(fake_repo: Path):
 def test_scaffold_missing_slash(fake_repo: Path):
     with pytest.raises(scaffold.ScaffoldError, match="expected"):
         scaffold.scaffold_app("just-an-app-name")
+
+
+def test_scaffold_writes_lf_line_endings(fake_repo: Path):
+    """Regression: on Windows, Path.write_text translates \\n → \\r\\n in
+    text mode, which conflicts with the repo's `eol=lf` .gitattributes
+    rule and forces a re-checkout after every scaffold. Files MUST be
+    written with LF only (\\n) so local==git is preserved byte-for-byte
+    on every platform."""
+    result = scaffold.scaffold_app("platform/lf-test")
+    for f in result.files_written:
+        data = f.read_bytes()
+        assert b"\r\n" not in data, (
+            f"{f.relative_to(result.app_dir)} contains CRLF — "
+            f"would force `git reset --hard` after every scaffold"
+        )

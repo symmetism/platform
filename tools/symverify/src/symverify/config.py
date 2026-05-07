@@ -110,3 +110,42 @@ def load_servers() -> dict[str, ServerConfig]:
             app=spec.get("app", name),
         )
     return out
+
+
+@dataclass(frozen=True, slots=True)
+class DeployConfig:
+    """SSH + remote-paths config for `sym deploy`. Loaded from
+    ~/.symmetism/config/deploy.toml. See deploy.py for usage."""
+
+    host: str
+    user: str
+    ssh_key: Path
+    sudo_pass_file: Path
+    remote_root: str        # /srv/symmetism
+    remote_envs: str        # /etc/symmetism
+    local_stack: Path       # Platform/server (source of truth for configs)
+    caddy_container: str    # name of the Caddy container to restart on Caddyfile change
+
+
+def load_deploy() -> DeployConfig | None:
+    """Parse deploy.toml. None if absent — caller surfaces a friendly error."""
+    p = config_dir() / "deploy.toml"
+    if not p.is_file():
+        return None
+    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    vps = data.get("vps", {})
+    stack = data.get("stack", {})
+
+    def _expand(s: str) -> str:
+        return s.replace("~", str(Path.home())) if s else s
+
+    return DeployConfig(
+        host=vps["host"],
+        user=vps["user"],
+        ssh_key=Path(_expand(vps["ssh_key"])),
+        sudo_pass_file=Path(_expand(vps["sudo_pass_file"])),
+        remote_root=vps.get("remote_root", "/srv/symmetism"),
+        remote_envs=vps.get("remote_envs", "/etc/symmetism"),
+        local_stack=Path(_expand(stack["local_stack"])),
+        caddy_container=stack.get("caddy_container", "caddy"),
+    )
