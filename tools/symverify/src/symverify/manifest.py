@@ -114,8 +114,18 @@ def compute_local_manifest(repo_path: str | Path) -> Manifest:
 
     Caller passes the repo root (anywhere git can resolve `--show-toplevel`
     is fine — we re-resolve to the toplevel internally).
+
+    Performance: SHA-256 is cached by (repo_path, rel, mtime_ns, size).
+    When a file's mtime/size match the cached entry, the cached SHA is
+    reused without re-reading the bytes. Reduces audit time on Windows
+    from ~25s to ~1-2s on hot runs (most files don't change). See
+    manifest_cache.py for invalidation semantics.
     """
+    from symverify import manifest_cache
+
+    cache = manifest_cache.get_cache()
     repo = Path(git_ops.git_root(repo_path))
+    repo_str = str(repo)
     paths = git_ops.git_ls_files_local(repo)
     index_modes = git_ops.git_ls_files_stage(repo)
 
@@ -127,11 +137,25 @@ def compute_local_manifest(repo_path: str | Path) -> Manifest:
         # git ls-files normally only emits blobs but be safe.
         if not full.is_file():
             continue
-        data = full.read_bytes()
-        size = len(data)
-        sha = hashlib.sha256(data).hexdigest()
+        st = full.stat()
+        size = st.st_size
+        mtime_ns = st.st_mtime_ns
         mode = _normalize_mode(index_modes.get(rel, 0o100644))
+
+        sha = cache.get_local(repo_str, rel, mtime_ns, size)
+        if sha is None:
+            data = full.read_bytes()
+            # Defensive: stat-reported size and actual byte count must
+            # agree — if not, file was rewritten between stat and read.
+            # Skip cache write to force a recompute next time.
+            if len(data) != size:
+                size = len(data)
+                sha = hashlib.sha256(data).hexdigest()
+            else:
+                sha = hashlib.sha256(data).hexdigest()
+                cache.put_local(repo_str, rel, mtime_ns, size, sha)
         entries.append(ManifestEntry(path=norm, mode=mode, size=size, sha256=sha))
+    cache.save()
     return Manifest(entries=entries)
 
 
@@ -147,17 +171,32 @@ def compute_git_manifest(repo_path: str | Path, ref: str = "HEAD") -> Manifest:
     compute size + SHA-256 from those bytes (the SHA-256 in the manifest
     is over file content, NOT git's blob SHA-1). Mode is git's reported
     tree mode.
+
+    Performance: keyed by git's blob SHA-1 (which IS a function of the
+    bytes), the SHA-256 is cached forever — a hit avoids both the
+    `git cat-file` subprocess and the hash. On hot runs, this turns
+    most of compute_git_manifest() into a hashmap lookup. See
+    manifest_cache.py.
     """
+    from symverify import manifest_cache
+
+    cache = manifest_cache.get_cache()
     repo = Path(git_ops.git_root(repo_path))
     entries: list[ManifestEntry] = []
     for mode, blob_sha, path in git_ops.git_ls_tree(repo, ref):
         norm = _normalize_path(path)
-        data = git_ops.git_cat_file_blob(repo, blob_sha)
-        size = len(data)
-        sha = hashlib.sha256(data).hexdigest()
+        cached = cache.get_git_blob(blob_sha)
+        if cached is not None:
+            size, sha = cached
+        else:
+            data = git_ops.git_cat_file_blob(repo, blob_sha)
+            size = len(data)
+            sha = hashlib.sha256(data).hexdigest()
+            cache.put_git_blob(blob_sha, size, sha)
         entries.append(
             ManifestEntry(path=norm, mode=_normalize_mode(mode), size=size, sha256=sha)
         )
+    cache.save()
     return Manifest(entries=entries)
 
 

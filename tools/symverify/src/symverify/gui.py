@@ -118,6 +118,25 @@ def load_recent_narratives(limit: int = 5) -> list[dict[str, Any]]:
         return []
 
 
+def load_ci_status() -> list[Any] | None:
+    """GHA run status for the CI panel. Returns None if the github.token
+    secret is missing (panel shows the "(no token configured)" hint)."""
+    from symverify import ci_status
+
+    if (config.secrets_dir() / "github.token").is_file():
+        try:
+            return ci_status.snapshot()
+        except Exception:
+            return []
+    return None
+
+
+def _humanize_seconds(sec: int) -> str:
+    """Reuse ci_status.humanize_duration without importing at module top."""
+    from symverify import ci_status
+    return ci_status.humanize_duration(sec)
+
+
 def coherence_state(status: dict[str, Any] | None) -> str:
     """Map a status payload to the same 3-state coherence label the
     public verify page uses: 'aligned' | 'drift' | 'alarm'.
@@ -549,8 +568,16 @@ class SymGUI(ctk.CTk):
     # ----- layout -----------------------------------------------------------
 
     def _build_layout(self) -> None:
+        # Layout grid (top → bottom):
+        #   row 0  header (fold + status + trinity rings)
+        #   row 1  repo rows (trinity per repo)
+        #   row 2  bracket grid (Q_A, H_S = 0)
+        #   row 3  CI builds — GHA run status (added later)
+        #   row 4  recent daemon events
+        #   row 5  narrative (taller + Copy button) — expandable
+        #   row 6  buttons
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(4, weight=1)
+        self.grid_rowconfigure(5, weight=1)  # narrative grows on resize
 
         # Header (fold + status)
         header = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=8)
@@ -644,9 +671,32 @@ class SymGUI(ctk.CTk):
 
         ctk.CTkLabel(brackets, text="").grid(row=4, column=0, pady=(0, 4))
 
-        # Recent events
+        # CI builds — GHA run status (resolves "is the yellow trinity
+        # because of an in-progress build, or because something broke?")
+        ci = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=8)
+        ci.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
+        ci.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            ci, text="CI builds",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLOR_MUTED, anchor="w",
+        ).grid(row=0, column=0, padx=12, pady=(8, 0), sticky="w")
+
+        self.label_ci = ctk.CTkLabel(
+            ci,
+            text="(no token configured — drop one at "
+                 "~/.symmetism/secrets/github.token)",
+            font=ctk.CTkFont(size=11, family="Consolas"),
+            text_color=COLOR_TEXT,
+            anchor="nw",
+            justify="left",
+        )
+        self.label_ci.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        # Recent daemon events
         recent = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=8)
-        recent.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
+        recent.grid(row=4, column=0, padx=12, pady=6, sticky="ew")
         recent.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -667,7 +717,7 @@ class SymGUI(ctk.CTk):
 
         # Narrative — taller textbox + one-click copy button.
         narrative = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=8)
-        narrative.grid(row=4, column=0, padx=12, pady=6, sticky="nsew")
+        narrative.grid(row=5, column=0, padx=12, pady=6, sticky="nsew")
         narrative.grid_columnconfigure(0, weight=1)
         narrative.grid_rowconfigure(1, weight=1)
 
@@ -712,7 +762,7 @@ class SymGUI(ctk.CTk):
 
         # Buttons
         buttons = ctk.CTkFrame(self, fg_color=COLOR_BG)
-        buttons.grid(row=5, column=0, padx=12, pady=(6, 12), sticky="ew")
+        buttons.grid(row=6, column=0, padx=12, pady=(6, 12), sticky="ew")
         for c in range(5):
             buttons.grid_columnconfigure(c, weight=1)
 
@@ -750,7 +800,12 @@ class SymGUI(ctk.CTk):
     def _refresh(self) -> None:
         """Re-read disk state, update widgets, schedule next refresh."""
         try:
-            self._render(load_status(), load_recent_events(), load_recent_narratives())
+            self._render(
+                load_status(),
+                load_recent_events(),
+                load_recent_narratives(),
+                load_ci_status(),
+            )
         except Exception as e:
             self.label_status.configure(
                 text=f"render error: {e}", text_color=COLOR_ALARM,
@@ -762,6 +817,7 @@ class SymGUI(ctk.CTk):
         status: dict[str, Any] | None,
         events: list[dict[str, Any]],
         narratives: list[dict[str, Any]],
+        ci_runs: list[Any] | None = None,
     ) -> None:
         if status is None:
             self.label_fold.configure(text="SYM-····-····-····-····")
@@ -831,6 +887,37 @@ class SymGUI(ctk.CTk):
             self.label_recent.configure(text="\n".join(lines))
         else:
             self.label_recent.configure(text="(no events yet)")
+
+        # CI builds — show one row per repo with the latest in-progress
+        # or recently-completed run. Kills the "is the yellow trinity
+        # because the build is running, or because it failed?" ambiguity.
+        if ci_runs:
+            ci_lines = []
+            for r in ci_runs:
+                if r.is_running:
+                    glyph = "↻"
+                    color_hint = ""  # neutral — the "is it running" state
+                    detail = f"{r.workflow_name[:22]:22s} running ({_humanize_seconds(r.elapsed_sec)})"
+                elif r.conclusion == "success":
+                    glyph = "✓"
+                    color_hint = ""
+                    detail = f"{r.workflow_name[:22]:22s} success ({_humanize_seconds(r.elapsed_sec)})"
+                elif r.conclusion in ("failure", "cancelled", "timed_out"):
+                    glyph = "✗"
+                    color_hint = ""
+                    detail = f"{r.workflow_name[:22]:22s} {r.conclusion}"
+                else:
+                    glyph = "·"
+                    color_hint = ""
+                    detail = f"{r.workflow_name[:22]:22s} {r.status}"
+                ci_lines.append(
+                    f"{glyph}  {r.repo:14s} {detail}  {r.head_short}"
+                )
+            self.label_ci.configure(text="\n".join(ci_lines))
+        elif ci_runs is not None:
+            # Token's there but no runs returned — show "(no runs)" not the
+            # default "(no token)" fallback.
+            self.label_ci.configure(text="(no runs)")
 
         # Narrative
         if narratives:

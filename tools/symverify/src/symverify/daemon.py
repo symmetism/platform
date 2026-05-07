@@ -15,9 +15,62 @@ Each completed audit:
   - inserts a snapshot row into ~/.symmetism/state/symverify.db
   - atomically rewrites ~/.symmetism/state/status.json
   - logs an event (kind ∈ {filesystem, wake, hourly, manual})
-  - if status transitioned clean→drift, queues a narrative trigger
-    (deferred — narrative.narrate is invoked synchronously today;
-     async wrapping is a future refinement)
+  - on overall-status transitions clean↔drift↔lockdown, generates
+    a narrative via OpenAI (rate-limited per-status)
+
+═════════════════════════════════════════════════════════════════════
+CLAUDE ORIENTATION
+═════════════════════════════════════════════════════════════════════
+What runs where:
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Windows Scheduled Task: pythonw.exe -m symverify daemon     │
+  │  (DEFAULT_TASK_NAME, AtLogOn trigger, current user, Limited) │
+  └──────────────────────────────────────────────────────────────┘
+                                ↓
+            spawned process imports this module ONCE
+                                ↓
+  ┌──────────────────────────────────────────────────────────────┐
+  │ TriggerWorker thread     ← queue ←  fs/wake/hourly callbacks │
+  │     │                                                        │
+  │     ↓  run_audit_cycle() — ~5s on hot cache, ~30s cold       │
+  │  state_collect.build_state(repos, servers)                   │
+  │  registry.audit(state)                                       │
+  │  atomic_write_json(status.json)                              │
+  │  db.insert_snapshot + insert_event                           │
+  │  _maybe_narrate_transition(...)                              │
+  └──────────────────────────────────────────────────────────────┘
+
+Critical pythonw gotchas (caused multi-day bugs in earlier sessions):
+  1. sys.stdout / sys.stderr are None under pythonw; logging
+     StreamHandler crashes silently. cli.py daemon_cmd reroutes
+     stderr+stdout to ~/.symmetism/state/daemon.log + uses
+     RotatingFileHandler. Don't bypass.
+  2. subprocess (git via git_ops) needs stdin=DEVNULL +
+     creationflags=CREATE_NO_WINDOW. Without these, git.exe blocks
+     allocating a console under pythonw and the audit hangs forever.
+     git_ops.py sets these globally — don't strip them.
+
+Restart required when YOU CHANGE this file or any module imported
+here. The running pythonw process is frozen at the import-time state
+of every module it pulled. To pick up a change:
+  Stop-ScheduledTask "Symmetism SymVerify Daemon"
+  Get-Process pythonw | Stop-Process -Force
+  Start-ScheduledTask "Symmetism SymVerify Daemon"
+
+Source-of-truth files this daemon reads/writes:
+  ~/.symmetism/config/repos.toml          (input: which repos)
+  ~/.symmetism/config/servers.toml        (input: which /__manifest urls)
+  ~/.symmetism/secrets/symverify.<X>.token (input: per-server tokens)
+  ~/.symmetism/secrets/openai.key          (input: narrative API)
+  _command/STABILIZER_REGISTRY.json        (input: charge definitions)
+  _command/MANIFEST_CANONICAL.json         (input: immutable anchors)
+  ~/.symmetism/state/status.json           (output: latest snapshot — what
+                                            the GUI + verify page read)
+  ~/.symmetism/state/symverify.db          (output: SQLite — sym log/timeline)
+  ~/.symmetism/state/daemon.log            (output: rotating log)
+  ~/.symmetism/state/manifest_cache.json   (output: SHA-256 cache; safe
+                                            to delete to force a fresh full
+                                            rehash next cycle)
 """
 
 from __future__ import annotations

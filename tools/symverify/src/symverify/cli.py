@@ -5,9 +5,50 @@ Subcommands:
   sym verify-canonical         Re-hash all immutable anchors
   sym registry list            Print active Q_A registry
   sym init                     First-time setup (registers repos, runs audit)
+  sym daemon                   Long-running audit loop (Phase J)
+  sym install-service          Register the daemon as a Scheduled Task
+  sym uninstall-service        Remove the Scheduled Task
+  sym service-status           Show whether the task is installed + last run
+  sym push <repo>/<scope>      Pre-gate + commit + push pipeline (F11)
+  sym scaffold <repo>/<name>   Generate a Symmetism-tracked app skeleton
+  sym deploy [--dry-run]       Apply Platform/server/ changes to the VPS
+  sym attest                   Publish current snapshot to the public Gist
+  sym fold [--verify]          Print + (optionally) verify the system fold
+  sym log [--since X]          Chronological events + narratives
+  sym timeline [--days N]      30-day coherence strip
+  sym gui                      Launch the Windows GUI
 
-`--explain` triggers a Haiku/OpenAI narrative on the current snapshot
-(deferred to E5 — for now it just prints a hint).
+═════════════════════════════════════════════════════════════════════
+CLAUDE ORIENTATION
+═════════════════════════════════════════════════════════════════════
+This module is the user-facing entry point. Every command is a
+`@main.command` click handler. The actual work lives in sibling
+modules; cli.py is thin glue + presentation:
+
+  command            → calls into                  → reads/writes
+  ─────────────────────────────────────────────────────────────────
+  status             → state_collect + stabilizer  → BRACKETS.json
+  verify-canonical   → canonical                   → (read-only)
+  daemon             → daemon.Daemon().run()       → status.json + log
+  push               → push.run_push               → git, GHA
+  scaffold           → scaffold.scaffold_app       → new app skeleton
+  deploy             → deploy.deploy               → SSH/SFTP to VPS
+  gui                → gui.main()                  → Tk window
+  attest             → publisher (via httpx)       → public Gist
+  log/timeline       → db.list_events/snapshots    → SQLite
+
+UTF-8 reconfig at import is REQUIRED — Windows defaults to cp1252
+which can't encode the Unicode glyphs (✓ ✗ ◉ ≠) we render via rich.
+Don't remove _force_utf8_stdio().
+
+Adding a new command:
+  1. Define `@main.command("name")` with click options.
+  2. Inside, lazy-import any heavy modules (e.g. `from symverify
+     import push as _push` inside the function body, not at module
+     top) so `sym --help` stays fast.
+  3. Use `Console().print()` not `click.echo()` for any rich-markup
+     output — click.echo writes raw markup to stdout.
+  4. Update this list in the docstring above.
 """
 
 from __future__ import annotations

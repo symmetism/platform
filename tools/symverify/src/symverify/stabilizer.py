@@ -9,6 +9,54 @@ Compute-function dispatch is via `compute_func` strings stored in the
 registry JSON; we resolve them to Python callables via a static map so
 the JSON remains language-agnostic and we don't import-eval arbitrary
 strings at runtime.
+
+═════════════════════════════════════════════════════════════════════
+CLAUDE ORIENTATION
+═════════════════════════════════════════════════════════════════════
+The six charges (don't add a 7th without thinking — DIM_STAB is also 6):
+  Q_canonical    immutable-anchor SHA-256 still matches MANIFEST_CANONICAL
+  Q_structure    critical paths still present in both repos
+  Q_trinity_R    Reflexivity local==git==server (commit-SHA aligned)
+  Q_trinity_P    Platform   local==git==server (commit-SHA aligned)
+  Q_cross_repo   shared invariants (license, schema, version) byte-aligned
+  Q_secrets      no secret-pattern matches anywhere in either repo
+
+Bracket statuses:
+  conserved        bracket is 0 — system is healthy on this charge
+  drift_expected   bracket non-zero but matches a registered pattern;
+                   doesn't trigger alarm (e.g. `local≠git` from CRLF
+                   on Windows is a known acceptable mode)
+  drift_alarm      bracket non-zero, no pattern match → halt the system
+  pending          waiting for input (e.g., server hasn't been polled yet)
+
+Where it fits:
+  daemon.run_audit_cycle()
+    → state_collect.build_state(repos, servers) → State + meta dicts
+    → Registry.audit(state) → AuditReport (this module)
+    → status_payload written to ~/.symmetism/state/status.json
+    → if any bracket is drift_alarm → overall=lockdown → narrative
+
+Re-pinning expected_value (cross_repo, canonical):
+  When a tracked invariant LEGITIMATELY changes (e.g. LICENSE got
+  renormalized, symverify version bumped), the registry's
+  expected_value goes stale — bracket goes drift_alarm. To fix:
+    1. Recompute the new expected_value from current invariants.
+    2. Edit STABILIZER_REGISTRY.json with the new value + a note in
+       expected_value_pinned_at explaining why.
+    3. Daemon picks it up on next audit (registry is reloaded each
+       cycle from disk).
+
+Secret regex set (SECRET_PATTERNS):
+  These are the bytes that Q_secrets and `sym push --skip-secret-scan`
+  scan repos and staged diffs for. If you write a TEST that needs
+  one of these literals, SPLIT IT — concatenate at runtime so the
+  source bytes don't self-match. Otherwise the daemon will lockdown
+  on its next audit.
+  Example: `pat = "gh" + "p_" + "A" * 36`  (NOT `"ghp_AAAA..."`).
+
+  Memory: see `classmethod_bare_call_pitfall.md` and
+  `ai_plan_caught_bug.md` for the time this trap fired in production
+  and the AI narrator caught it before any human noticed.
 """
 
 from __future__ import annotations
