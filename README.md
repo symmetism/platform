@@ -2,6 +2,15 @@
 [![Last Verified](https://symmetism.com/api/fingerprint/timestamp.svg)](https://symmetism.com/verify)
 [Verify in your browser →](https://symmetism.com/verify)
 
+> **Status: operational.** The Symmetism build battle plan completed at
+> step J7 on 2026-05-07. The system is now self-verifying: a daemon
+> recomputes `{Q_A, H_S} = 0` on every filesystem change, hourly
+> heartbeat, and wake-from-sleep. The CLI (`sym status`), the GUI
+> (`sym gui` / bundled `Symmetism.exe`), and the public verify page
+> all read the same source of truth. Coherence is no longer something
+> we check — it's something the system continuously confirms about
+> itself.
+
 ---
 
 # Platform
