@@ -1,15 +1,20 @@
-# Symmetism Caddy reverse proxy (battle plan F6).
+# Symmetism Caddy reverse proxy.
 #
-# - reflexivity.symmetism.com  → reflexivity-webapp container (port 5000)
-# - SSE on /verify gets long timeouts + no buffering (flush_interval -1)
-# - / and other routes pass through normally
-# - HTTPS via Let's Encrypt automatic provisioning
+# Routing:
+#   reflexivity.symmetism.com  → landing container          (port 8000)
+#                                  small FastAPI landing page with links
+#                                  to the engine + verify
+#   engine.symmetism.com       → engine container           (port 5000)
+#                                  the renamed physics app (was
+#                                  reflexivity-webapp); /verify is an
+#                                  SSE stream → long timeouts + no
+#                                  buffering (flush_interval -1)
+#   symmetism.com, verify.symmetism.com → attestation-service (port 8000)
+#                                  public verify page + fingerprint badges
 #
 # Rate limiting is intentionally absent here. nginx (the prior stack)
 # had per-route rate-limit zones; Caddy core doesn't have rate
-# limiting and we're skipping the third-party plugin for v1. Track:
-# add caddy-ratelimit module + zones for /probe (30/min) and
-# /montecarlo (6/min) post-Phase F.
+# limiting and we're skipping the third-party plugin for v1.
 
 {
     # Global options
@@ -17,6 +22,10 @@
     auto_https disable_redirects
     admin off                        # disable :2019 admin API
 }
+
+# ---------------------------------------------------------------------------
+# reflexivity.symmetism.com — the landing page (post-2026-05-07 rename).
+# ---------------------------------------------------------------------------
 
 reflexivity.symmetism.com {
     encode gzip zstd
@@ -28,11 +37,33 @@ reflexivity.symmetism.com {
         }
     }
 
-    # SSE-friendly: /verify holds connections for long verification runs.
-    # flush_interval -1 disables internal buffering so events stream live.
+    reverse_proxy landing:8000 {
+        transport http {
+            read_timeout 60s
+            dial_timeout 5s
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# engine.symmetism.com — the physics app (renamed from reflexivity-webapp).
+# /verify holds an SSE connection for long verification runs; that route
+# gets infinite timeouts + flush_interval -1 so events stream live.
+# ---------------------------------------------------------------------------
+
+engine.symmetism.com {
+    encode gzip zstd
+
+    log {
+        output file /var/log/caddy/engine.access.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+    }
+
     @sse path /verify
     handle @sse {
-        reverse_proxy reflexivity-webapp:5000 {
+        reverse_proxy engine:5000 {
             flush_interval -1
             transport http {
                 read_timeout    24h
@@ -43,7 +74,7 @@ reflexivity.symmetism.com {
     }
 
     # Everything else.
-    reverse_proxy reflexivity-webapp:5000 {
+    reverse_proxy engine:5000 {
         transport http {
             read_timeout 60s
             dial_timeout 5s
@@ -51,9 +82,11 @@ reflexivity.symmetism.com {
     }
 }
 
-# Attestation service: serves the public /verify page, fingerprint
-# badges, and the publish endpoint. Both apex and verify subdomain
-# point at the same backend (DNS-only / gray cloud at Cloudflare).
+# ---------------------------------------------------------------------------
+# Attestation service: public /verify page, fingerprint badges, publish
+# endpoint. Both apex and verify subdomain share the same backend.
+# ---------------------------------------------------------------------------
+
 symmetism.com, verify.symmetism.com {
     encode gzip zstd
 

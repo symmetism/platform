@@ -1,0 +1,28 @@
+# Per-app compose: landing — small FastAPI page at
+# reflexivity.symmetism.com with links to the engine app + verify.
+# Added 2026-05-07 alongside the reflexivity-webapp → engine rename.
+#
+# Image is pulled from GHCR by Watchtower. Operator places the env
+# file at /etc/symmetism/landing.env on the VPS containing:
+#   SYMVERIFY_TOKEN=<32-byte hex>
+
+services:
+  landing:
+    image: ghcr.io/symmetism/landing:latest
+    container_name: landing
+    restart: unless-stopped
+    pull_policy: always
+    networks:
+      - symmetism
+    env_file:
+      - /etc/symmetism/landing.env
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "org.symmetism.app=landing"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # No host port mapping — Caddy reaches it on the symmetism network.

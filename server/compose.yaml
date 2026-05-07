@@ -68,5 +68,6 @@ volumes:
     name: caddy_logs
 
 include:
-  - apps/reflexivity-webapp.compose.yaml
+  - apps/engine.compose.yaml
+  - apps/landing.compose.yaml
   - apps/attestation-service.compose.yaml

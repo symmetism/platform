@@ -1,7 +1,9 @@
-# Per-app compose: reflexivity-webapp.
+# Per-app compose: engine (the Reflexivity physics app —
+# falsifier, gap solver, Lean/GAP/PennyLane verifiers, math map).
+# Renamed from reflexivity-webapp on 2026-05-07.
 #
 # Image is pulled from GHCR by Watchtower. Operator places the env
-# file at /etc/symmetism/reflexivity-webapp.env on the VPS containing:
+# file at /etc/symmetism/engine.env on the VPS containing:
 #   SYMVERIFY_TOKEN=<32-byte hex>
 #   FRAMEWORK_VERSION=<semver>          (optional)
 #
@@ -10,18 +12,18 @@
 # the image at whatever's currently deployed.
 
 services:
-  reflexivity-webapp:
-    image: ghcr.io/symmetism/reflexivity-webapp:latest
-    container_name: reflexivity-webapp
+  engine:
+    image: ghcr.io/symmetism/engine:latest
+    container_name: engine
     restart: unless-stopped
     pull_policy: always
     networks:
       - symmetism
     env_file:
-      - /etc/symmetism/reflexivity-webapp.env
+      - /etc/symmetism/engine.env
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-      - "org.symmetism.app=reflexivity-webapp"
+      - "org.symmetism.app=engine"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:5000/healthz"]
       interval: 30s
