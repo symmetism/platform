@@ -1,10 +1,30 @@
 # Symmetism top-level docker-compose (battle plan F6).
 #
 # Orchestrates: Caddy (reverse proxy + auto-HTTPS) and Watchtower
-# (60-second poll on labeled containers; rolling restart on new images).
+# (30-second poll on labeled containers; rolling restart on new images).
 #
 # Per-app compose files live at server/apps/<name>.compose.yaml and
 # are pulled in via the `include` directive — see bottom.
+#
+# ─────────────────────────────────────────────────────────────────
+# CLAUDE ORIENTATION (read this first when you wake up here):
+#   ▸ This file lives at /srv/symmetism/compose.yaml on the VPS
+#     (72.167.34.12) — pushed there by `sym deploy` from the local
+#     Platform/server/ tree. NOT a git clone on the VPS side.
+#   ▸ Adding/renaming an app: add a per-app file under apps/ and
+#     list it in the `include:` block at the bottom. `sym deploy`
+#     picks up include-list deltas automatically (renames, removals).
+#   ▸ Watchtower polls GHCR for new image tags every 30s. New
+#     images are tagged `:latest` + `:<commit_sha>` by GHA on every
+#     push. Don't expect updates faster than ~2-3 min end-to-end
+#     (build + poll + roll).
+#   ▸ Each app needs a sibling /etc/symmetism/<name>.env on the
+#     VPS containing SYMVERIFY_TOKEN. `sym deploy` creates these
+#     from ~/.symmetism/secrets/symverify.<name>.token if missing.
+#   ▸ Caddy's admin API is OFF (admin off in Caddyfile). To reload
+#     config: `docker restart caddy`. `sym deploy` does this
+#     automatically after applying Caddyfile changes.
+# ─────────────────────────────────────────────────────────────────
 
 name: symmetism
 
@@ -46,13 +66,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - TZ=UTC
-      - WATCHTOWER_POLL_INTERVAL=60          # seconds
+      # 30s poll halves the median time-to-deploy after a push (was 60s).
+      # Higher GHCR rate-limit cost is negligible for one operator.
+      - WATCHTOWER_POLL_INTERVAL=30          # seconds
       - WATCHTOWER_LABEL_ENABLE=true         # only update opted-in containers
       - WATCHTOWER_CLEANUP=true              # remove old images
       - WATCHTOWER_ROLLING_RESTART=true
       - WATCHTOWER_INCLUDE_RESTARTING=true
       - WATCHTOWER_NOTIFICATIONS=
-    command: ["--interval", "60", "--label-enable", "--cleanup", "--rolling-restart"]
+    command: ["--interval", "30", "--label-enable", "--cleanup", "--rolling-restart"]
 
 networks:
   symmetism:
